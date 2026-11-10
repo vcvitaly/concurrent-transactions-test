@@ -1,4 +1,4 @@
-CREATE TABLE IF NOT EXISTS accounts
+CREATE TABLE accounts
 (
     id         BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     name       VARCHAR(255)   NOT NULL,
@@ -7,7 +7,7 @@ CREATE TABLE IF NOT EXISTS accounts
     updated_at TIMESTAMPTZ    NOT NULL DEFAULT now()
 );
 
-CREATE TABLE IF NOT EXISTS transfers
+CREATE TABLE transfers
 (
     id              BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     from_account_id BIGINT         NOT NULL REFERENCES accounts (id),

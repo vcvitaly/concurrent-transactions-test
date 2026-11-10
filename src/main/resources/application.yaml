@@ -5,6 +5,3 @@ spring:
     url: jdbc:postgresql://localhost:5432/concurrent_transactions
     username: postgres
     password: postgres
-  sql:
-    init:
-      mode: always
