@@ -1,3 +1,7 @@
 spring:
   application:
     name: concurrent-transactions-test
+  datasource:
+    url: jdbc:postgresql://localhost:5432/concurrent_transactions
+    username: postgres
+    password: postgres
