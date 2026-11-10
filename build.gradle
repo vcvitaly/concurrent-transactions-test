@@ -31,6 +31,15 @@ dependencies {
     testAnnotationProcessor 'org.projectlombok:lombok'
 }
 
+// Only produce the executable jar, with a stable name the Dockerfile can rely on.
+tasks.named('jar') {
+    enabled = false
+}
+
+tasks.named('bootJar') {
+    archiveFileName = 'app.jar'
+}
+
 tasks.named('test') {
     useJUnitPlatform()
 }
