@@ -14,12 +14,13 @@ import java.util.Optional;
 @RequiredArgsConstructor
 public class AccountDao {
 
-    private static final String COLUMNS = "id, name, balance, created_at, updated_at";
+    private static final String COLUMNS = "id, name, balance, version, created_at, updated_at";
 
     private static final RowMapper<Account> ROW_MAPPER = (rs, _) -> new Account(
             rs.getLong("id"),
             rs.getString("name"),
             rs.getBigDecimal("balance"),
+            rs.getLong("version"),
             rs.getObject("created_at", OffsetDateTime.class),
             rs.getObject("updated_at", OffsetDateTime.class)
     );

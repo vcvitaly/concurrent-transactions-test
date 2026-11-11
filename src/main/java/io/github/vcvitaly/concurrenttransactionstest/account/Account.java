@@ -7,6 +7,7 @@ public record Account(
         long id,
         String name,
         BigDecimal balance,
+        long version,
         OffsetDateTime createdAt,
         OffsetDateTime updatedAt
 ) {

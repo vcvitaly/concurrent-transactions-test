@@ -8,6 +8,7 @@ public record Transfer(
         long fromAccountId,
         long toAccountId,
         BigDecimal amount,
+        String idempotencyKey,
         OffsetDateTime createdAt
 ) {
 }

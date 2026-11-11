@@ -48,7 +48,7 @@ public class TransferService {
         // deposit
         accountDao.updateBalance(toId, to.balance().add(amount));
 
-        return transferDao.insert(fromId, toId, amount);
+        return transferDao.insert(fromId, toId, amount, request.idempotencyKey());
     }
 
     public Transfer get(long id) {

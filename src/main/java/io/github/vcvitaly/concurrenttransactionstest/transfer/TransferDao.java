@@ -14,27 +14,29 @@ import java.util.Optional;
 @RequiredArgsConstructor
 public class TransferDao {
 
-    private static final String COLUMNS = "id, from_account_id, to_account_id, amount, created_at";
+    private static final String COLUMNS = "id, from_account_id, to_account_id, amount, idempotency_key, created_at";
 
     private static final RowMapper<Transfer> ROW_MAPPER = (rs, _) -> new Transfer(
             rs.getLong("id"),
             rs.getLong("from_account_id"),
             rs.getLong("to_account_id"),
             rs.getBigDecimal("amount"),
+            rs.getString("idempotency_key"),
             rs.getObject("created_at", OffsetDateTime.class)
     );
 
     private final JdbcClient jdbcClient;
 
-    public Transfer insert(long fromAccountId, long toAccountId, BigDecimal amount) {
+    public Transfer insert(long fromAccountId, long toAccountId, BigDecimal amount, String idempotencyKey) {
         return jdbcClient.sql("""
-                        INSERT INTO transfers (from_account_id, to_account_id, amount)
-                        VALUES (:from, :to, :amount)
+                        INSERT INTO transfers (from_account_id, to_account_id, amount, idempotency_key)
+                        VALUES (:from, :to, :amount, :idempotencyKey)
                         RETURNING %s
                         """.formatted(COLUMNS))
                 .param("from", fromAccountId)
                 .param("to", toAccountId)
                 .param("amount", amount)
+                .param("idempotencyKey", idempotencyKey)
                 .query(ROW_MAPPER)
                 .single();
     }

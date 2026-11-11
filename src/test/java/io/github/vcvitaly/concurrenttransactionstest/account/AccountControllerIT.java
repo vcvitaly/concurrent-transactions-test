@@ -33,6 +33,7 @@ class AccountControllerIT {
         assertThat(created).hasStatus(HttpStatus.CREATED);
         assertThat(created).bodyJson().extractingPath("$.name").isEqualTo("alice");
         assertThat(created).bodyJson().extractingPath("$.balance").isEqualTo(100.50);
+        assertThat(created).bodyJson().extractingPath("$.version").isEqualTo(0);
         assertThat(created).bodyJson().extractingPath("$.createdAt").isNotNull();
         assertThat(created).bodyJson().extractingPath("$.updatedAt").isNotNull();
 
