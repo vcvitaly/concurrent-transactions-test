@@ -3,20 +3,23 @@ package io.github.vcvitaly.concurrenttransactionstest.transfer;
 import io.github.vcvitaly.concurrenttransactionstest.account.Account;
 import io.github.vcvitaly.concurrenttransactionstest.account.AccountService;
 import io.github.vcvitaly.concurrenttransactionstest.account.AccountDao;
+import io.github.vcvitaly.concurrenttransactionstest.account.AccountUtil;
 import io.github.vcvitaly.concurrenttransactionstest.common.NotFoundException;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
-import java.util.List;
-import java.util.Optional;
+import java.util.*;
+import java.util.function.Function;
+import java.util.stream.Collectors;
+
+import static java.util.function.Predicate.not;
 
 @Service
 @RequiredArgsConstructor
 public class TransferService {
 
-    private final AccountService accountService;
     private final AccountDao accountDao;
     private final TransferDao transferDao;
 
@@ -41,8 +44,9 @@ public class TransferService {
         BigDecimal amount = request.amount();
         String idempotencyKey = request.idempotencyKey();
 
-        Account from = accountService.get(fromId);
-        Account to = accountService.get(toId);
+        SequencedMap<Long, Account> accountById = forTransfer(Set.of(fromId, toId));
+        Account from = accountById.get(fromId);
+        Account to = accountById.get(toId);
 
         Optional<Transfer> inserted = transferDao.insertIfAbsent(fromId, toId, amount, idempotencyKey);
         if (inserted.isEmpty()) {
@@ -86,5 +90,29 @@ public class TransferService {
         if (request.amount() == null || request.amount().compareTo(BigDecimal.ZERO) <= 0) {
             throw new IllegalArgumentException("amount must be positive");
         }
+    }
+
+    private SequencedMap<Long, Account> forTransfer(Set<Long> accountIdPair) {
+        if (accountIdPair.size() > 2) {
+            throw new IllegalArgumentException("Cannot select more than 2 accounts for transfer, got " + accountIdPair.size());
+        }
+        SequencedMap<Long, Account> accountById = accountDao.findByIdsForUpdate(accountIdPair).stream()
+                .collect(Collectors.toMap(
+                        Account::id,
+                        Function.identity(),
+                        (a, _) -> {
+                            throw new IllegalArgumentException("Duplicate id passed " + a.id());
+                        },
+                        LinkedHashMap::new
+                ));
+        if (accountById.size() < 2) {
+            throw new NotFoundException(
+                    "Could not find account ids for transfer: " +
+                            accountIdPair.stream()
+                                    .filter(not(accountById::containsKey))
+                                    .toList()
+            );
+        }
+        return accountById;
     }
 }

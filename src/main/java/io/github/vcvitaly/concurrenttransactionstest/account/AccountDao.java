@@ -7,8 +7,7 @@ import org.springframework.stereotype.Repository;
 
 import java.math.BigDecimal;
 import java.time.OffsetDateTime;
-import java.util.List;
-import java.util.Optional;
+import java.util.*;
 
 @Repository
 @RequiredArgsConstructor
@@ -44,6 +43,13 @@ public class AccountDao {
                 .param("id", id)
                 .query(ROW_MAPPER)
                 .optional();
+    }
+
+    public Set<Account> findByIdsForUpdate(Set<Long> ids) {
+        return jdbcClient.sql("SELECT %s FROM accounts WHERE id IN (:ids) ORDER BY id FOR UPDATE".formatted(COLUMNS))
+                .param("ids", ids)
+                .query(ROW_MAPPER)
+                .set();
     }
 
     public List<Account> findAll() {

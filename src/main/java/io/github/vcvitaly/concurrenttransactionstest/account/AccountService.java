@@ -19,7 +19,7 @@ public class AccountService {
     }
 
     public Account get(long id) {
-        return accountDao.findById(id).orElseThrow(() -> notFound(id));
+        return accountDao.findById(id).orElseThrow(() -> AccountUtil.notFound(id));
     }
 
     public List<Account> getAll() {
@@ -28,12 +28,12 @@ public class AccountService {
 
     public Account update(long id, AccountRequest request) {
         validate(request);
-        return accountDao.update(id, request.name(), request.balance()).orElseThrow(() -> notFound(id));
+        return accountDao.update(id, request.name(), request.balance()).orElseThrow(() -> AccountUtil.notFound(id));
     }
 
     public void delete(long id) {
         if (!accountDao.deleteById(id)) {
-            throw notFound(id);
+            throw AccountUtil.notFound(id);
         }
     }
 
@@ -44,9 +44,5 @@ public class AccountService {
         if (request.balance() == null || request.balance().compareTo(BigDecimal.ZERO) < 0) {
             throw new IllegalArgumentException("balance must be non-negative");
         }
-    }
-
-    static NotFoundException notFound(long id) {
-        return new NotFoundException("Account %d not found".formatted(id));
     }
 }
