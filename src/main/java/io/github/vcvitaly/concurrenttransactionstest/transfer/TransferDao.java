@@ -27,10 +27,16 @@ public class TransferDao {
 
     private final JdbcClient jdbcClient;
 
-    public Transfer insert(long fromAccountId, long toAccountId, BigDecimal amount, String idempotencyKey) {
+    /**
+     * Inserts the transfer unless one with the same (from, to, idempotency key) already exists.
+     * Returns empty on conflict. Transfers without a key (NULL) never conflict.
+     */
+    public Optional<Transfer> insertIfAbsent(long fromAccountId, long toAccountId, BigDecimal amount,
+                                             String idempotencyKey) {
         return jdbcClient.sql("""
                         INSERT INTO transfers (from_account_id, to_account_id, amount, idempotency_key)
                         VALUES (:from, :to, :amount, :idempotencyKey)
+                        ON CONFLICT ON CONSTRAINT uq_transfers_idempotency DO NOTHING
                         RETURNING %s
                         """.formatted(COLUMNS))
                 .param("from", fromAccountId)
@@ -38,7 +44,19 @@ public class TransferDao {
                 .param("amount", amount)
                 .param("idempotencyKey", idempotencyKey)
                 .query(ROW_MAPPER)
-                .single();
+                .optional();
+    }
+
+    public Optional<Transfer> findByIdempotencyKey(long fromAccountId, long toAccountId, String idempotencyKey) {
+        return jdbcClient.sql("""
+                        SELECT %s FROM transfers
+                        WHERE from_account_id = :from AND to_account_id = :to AND idempotency_key = :idempotencyKey
+                        """.formatted(COLUMNS))
+                .param("from", fromAccountId)
+                .param("to", toAccountId)
+                .param("idempotencyKey", idempotencyKey)
+                .query(ROW_MAPPER)
+                .optional();
     }
 
     public Optional<Transfer> findById(long id) {
