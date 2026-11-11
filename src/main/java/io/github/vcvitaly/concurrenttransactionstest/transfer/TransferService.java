@@ -64,9 +64,13 @@ public class TransferService {
         }
 
         // withdraw
-        accountDao.updateBalance(fromId, from.balance().subtract(amount));
+        if (accountDao.withdraw(fromId, amount) != 1) {
+            throw new IllegalStateException(
+                    "%d has has insufficient balance after internal verification: requested %s".formatted(fromId, amount)
+            );
+        }
         // deposit
-        accountDao.updateBalance(toId, to.balance().add(amount));
+        accountDao.deposit(toId, amount);
 
         return new TransferResult(inserted.get(), true);
     }

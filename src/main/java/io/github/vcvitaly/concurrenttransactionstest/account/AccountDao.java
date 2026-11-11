@@ -72,14 +72,20 @@ public class AccountDao {
                 .optional();
     }
 
-    /**
-     * Blindly overwrites the balance with the given value. Callers compute the new value
-     * from a previously read balance, which is a classic read-modify-write.
-     */
-    public void updateBalance(long id, BigDecimal newBalance) {
-        jdbcClient.sql("UPDATE accounts SET balance = :balance, updated_at = now() WHERE id = :id")
+    public int withdraw(long id, BigDecimal amount) {
+        return jdbcClient.sql("""
+        UPDATE accounts SET balance = balance - :amount, updated_at = now() WHERE id = :id
+        AND balance >= :amount
+        """)
                 .param("id", id)
-                .param("balance", newBalance)
+                .param("amount", amount)
+                .update();
+    }
+
+    public int deposit(long id, BigDecimal amount) {
+        return jdbcClient.sql("UPDATE accounts SET balance = balance + :amount, updated_at = now() WHERE id = :id")
+                .param("id", id)
+                .param("amount", amount)
                 .update();
     }
 
