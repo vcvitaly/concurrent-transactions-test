@@ -1,0 +1,13 @@
+{{- if .Values.podDisruptionBudget.enabled }}
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "concurrent-transactions.fullname" . }}
+  labels:
+    {{- include "concurrent-transactions.labels" . | nindent 4 }}
+spec:
+  minAvailable: {{ .Values.podDisruptionBudget.minAvailable }}
+  selector:
+    matchLabels:
+      {{- include "concurrent-transactions.selectorLabels" . | nindent 6 }}
+{{- end }}

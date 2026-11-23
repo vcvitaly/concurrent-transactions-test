@@ -1,0 +1,72 @@
+replicaCount: 2
+
+image:
+  # Must be pullable by the cluster. Build it from the repository Dockerfile.
+  repository: concurrent-transactions-test
+  # Defaults to the chart appVersion.
+  tag: ""
+  pullPolicy: IfNotPresent
+
+imagePullSecrets: []
+
+nameOverride: ""
+fullnameOverride: ""
+
+service:
+  type: ClusterIP
+  port: 8080
+
+# PostgreSQL is not deployed by this chart.
+database:
+  # Required, for example jdbc:postgresql://postgres:5432/concurrent_transactions
+  url: ""
+  # Required: name of an existing Secret in the release namespace.
+  existingSecret: ""
+  usernameKey: username
+  passwordKey: password
+
+resources:
+  requests:
+    cpu: 250m
+    memory: 512Mi
+  limits:
+    memory: 768Mi
+
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 1
+
+# The image runs as a named user, so runAsNonRoot cannot be verified by the kubelet
+# unless a numeric runAsUser is also set here.
+podSecurityContext: {}
+
+securityContext:
+  allowPrivilegeEscalation: false
+  capabilities:
+    drop:
+      - ALL
+
+# The app has no HTTP health endpoint, so probes check that the port accepts connections.
+startupProbe:
+  tcpSocket:
+    port: http
+  periodSeconds: 5
+  failureThreshold: 30
+
+readinessProbe:
+  tcpSocket:
+    port: http
+  periodSeconds: 5
+  failureThreshold: 3
+
+livenessProbe:
+  tcpSocket:
+    port: http
+  periodSeconds: 10
+  failureThreshold: 3
+
+extraEnv: []
+
+nodeSelector: {}
+tolerations: []
+affinity: {}
