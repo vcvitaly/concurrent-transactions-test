@@ -7,7 +7,6 @@ import io.github.vcvitaly.concurrenttransactionstest.account.AccountUtil;
 import io.github.vcvitaly.concurrenttransactionstest.common.NotFoundException;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
-import org.springframework.transaction.annotation.Isolation;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
@@ -32,7 +31,7 @@ public class TransferService {
      * A concurrent duplicate blocks on the unique index until the first transaction finishes, so only
      * one of them ever moves money.
      */
-    @Transactional(isolation = Isolation.SERIALIZABLE)
+    @Transactional
     public TransferResult transfer(TransferRequest request) {
         validate(request);
         long fromId = request.fromAccountId();

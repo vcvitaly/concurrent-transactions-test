@@ -46,7 +46,7 @@ public class AccountDao {
     }
 
     public Set<Account> findByIdsForUpdate(Set<Long> ids) {
-        return jdbcClient.sql("SELECT %s FROM accounts WHERE id IN (:ids) ORDER BY id".formatted(COLUMNS))
+        return jdbcClient.sql("SELECT %s FROM accounts WHERE id IN (:ids) ORDER BY id FOR UPDATE".formatted(COLUMNS))
                 .param("ids", ids)
                 .query(ROW_MAPPER)
                 .set();
