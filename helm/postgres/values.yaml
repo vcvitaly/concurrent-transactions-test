@@ -1,0 +1,72 @@
+image:
+  repository: postgres
+  tag: 18-alpine
+  pullPolicy: IfNotPresent
+
+imagePullSecrets: []
+
+nameOverride: ""
+fullnameOverride: ""
+
+auth:
+  database: concurrent_transactions
+  username: postgres
+  # Local development default, matching docker-compose.yaml. Override it for shared clusters.
+  # Postgres only applies these credentials when it initializes an empty volume.
+  password: postgres
+  # Use an existing Secret instead of creating one. auth.username and auth.password are then ignored.
+  existingSecret: ""
+  usernameKey: username
+  passwordKey: password
+
+service:
+  type: ClusterIP
+  port: 5432
+
+persistence:
+  size: 5Gi
+  # Empty uses the cluster's default StorageClass.
+  storageClass: ""
+  accessModes:
+    - ReadWriteOnce
+
+resources:
+  requests:
+    cpu: 250m
+    memory: 256Mi
+  limits:
+    memory: 1Gi
+
+# UID and GID 70 are the postgres user in the Alpine image.
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 70
+  runAsGroup: 70
+  fsGroup: 70
+
+securityContext:
+  allowPrivilegeEscalation: false
+  capabilities:
+    drop:
+      - ALL
+
+terminationGracePeriodSeconds: 60
+
+# Readiness uses the docker-compose health check timing: 5s interval, 5s timeout, 10 retries.
+probes:
+  startup:
+    periodSeconds: 5
+    timeoutSeconds: 5
+    failureThreshold: 60
+  readiness:
+    periodSeconds: 5
+    timeoutSeconds: 5
+    failureThreshold: 10
+  liveness:
+    periodSeconds: 10
+    timeoutSeconds: 5
+    failureThreshold: 6
+
+nodeSelector: {}
+tolerations: []
+affinity: {}
