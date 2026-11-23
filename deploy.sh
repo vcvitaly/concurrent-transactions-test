@@ -2,7 +2,7 @@
 # Deploys Postgres and the service to the current kubectl context, or removes them.
 #
 #   ./deploy.sh              build the app image, then install or upgrade both charts
-#   ./deploy.sh --teardown   uninstall both charts, keeping the database volume
+#   ./deploy.sh --teardown   uninstall both charts and permanently delete the database volume
 #
 # Set NAMESPACE to override the target namespace.
 
@@ -16,7 +16,9 @@ POSTGRES_RELEASE="postgres"
 APP_RELEASE="app"
 DATABASE_URL="jdbc:postgresql://${POSTGRES_RELEASE}:5432/concurrent_transactions"
 DATABASE_SECRET="${POSTGRES_RELEASE}-credentials"
+DATABASE_VOLUME_CLAIM="data-${POSTGRES_RELEASE}-0"
 IMAGE_REPOSITORY="concurrent-transactions-test"
+PROXY_DEPLOYMENT="${APP_RELEASE}-concurrent-transactions-proxy"
 
 usage() {
   echo "Usage: $0 [--teardown]"
@@ -73,7 +75,8 @@ deploy() {
     --wait \
     --timeout "$TIMEOUT"
 
-  echo "Deployment complete."
+  echo "Deployment complete. To reach the service at http://localhost:8080, run:"
+  echo "  kubectl -n $NAMESPACE port-forward deployment/$PROXY_DEPLOYMENT 8080:8080"
 }
 
 teardown() {
@@ -82,8 +85,10 @@ teardown() {
   # The app goes first so it is not left running without its database.
   helm uninstall "$APP_RELEASE" --namespace "$NAMESPACE" --ignore-not-found --wait --timeout "$TIMEOUT"
   helm uninstall "$POSTGRES_RELEASE" --namespace "$NAMESPACE" --ignore-not-found --wait --timeout "$TIMEOUT"
+  # StatefulSet volumes outlive the Helm release, so the claim is removed explicitly.
+  kubectl delete pvc "$DATABASE_VOLUME_CLAIM" --namespace "$NAMESPACE" --ignore-not-found --timeout "$TIMEOUT"
 
-  echo "Teardown complete. The database volume and namespace were kept."
+  echo "Teardown complete. The database volume was deleted and the namespace was kept."
 }
 
 case "${1:-}" in

@@ -20,6 +20,18 @@ app.kubernetes.io/name: {{ include "concurrent-transactions.name" . }}
 app.kubernetes.io/instance: {{ .Release.Name }}
 {{- end }}
 
+{{/* A separate name label keeps proxy pods out of the app Service and disruption budget. */}}
+{{- define "concurrent-transactions.proxySelectorLabels" -}}
+app.kubernetes.io/name: {{ include "concurrent-transactions.name" . | trunc 57 | trimSuffix "-" }}-proxy
+app.kubernetes.io/instance: {{ .Release.Name }}
+{{- end }}
+
+{{- define "concurrent-transactions.proxyLabels" -}}
+helm.sh/chart: {{ printf "%s-%s" .Chart.Name .Chart.Version | replace "+" "_" | trunc 63 | trimSuffix "-" }}
+{{ include "concurrent-transactions.proxySelectorLabels" . }}
+app.kubernetes.io/managed-by: {{ .Release.Service }}
+{{- end }}
+
 {{- define "concurrent-transactions.labels" -}}
 helm.sh/chart: {{ printf "%s-%s" .Chart.Name .Chart.Version | replace "+" "_" | trunc 63 | trimSuffix "-" }}
 {{ include "concurrent-transactions.selectorLabels" . }}
