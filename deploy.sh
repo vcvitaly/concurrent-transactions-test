@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # Deploys Postgres and the service to the current kubectl context, or removes them.
 #
-#   ./deploy.sh              build the app image, then install or upgrade both charts
-#   ./deploy.sh --teardown   uninstall both charts and permanently delete the database volume
+#   ./deploy.sh              build the images, install or upgrade both charts, then start speedbump
+#   ./deploy.sh --teardown   remove speedbump, uninstall both charts and permanently delete the
+#                            database volume
 #
 # Set NAMESPACE to override the target namespace.
 
@@ -19,6 +20,11 @@ DATABASE_SECRET="${POSTGRES_RELEASE}-credentials"
 DATABASE_VOLUME_CLAIM="data-${POSTGRES_RELEASE}-0"
 IMAGE_REPOSITORY="concurrent-transactions-test"
 PROXY_DEPLOYMENT="${APP_RELEASE}-concurrent-transactions-proxy"
+PROXY_SERVICE="app-proxy"
+SPEEDBUMP_POD="speedbump"
+SPEEDBUMP_IMAGE="speedbump:v1.1.0"
+SPEEDBUMP_LATENCY="20ms"
+SPEEDBUMP_PORT="8081"
 
 usage() {
   echo "Usage: $0 [--teardown]"
@@ -54,6 +60,45 @@ build_image() {
   docker tag "$IMAGE_REPOSITORY:local" "$IMAGE_REPOSITORY:$IMAGE_TAG"
 }
 
+# Built locally for the cluster's architecture, because the published image is amd64-only.
+build_speedbump_image() {
+  docker build -t "$SPEEDBUMP_IMAGE" - >&2 <<'EOF'
+FROM golang:1.17.11-alpine3.16 AS builder
+ADD https://github.com/kffl/speedbump.git#v1.1.0 /src
+WORKDIR /src
+RUN CGO_ENABLED=0 go build -o /speedbump .
+
+FROM scratch
+COPY --from=builder /speedbump /speedbump
+USER 65534:65534
+ENTRYPOINT ["/speedbump"]
+EOF
+}
+
+# Recreated on every deploy, because a pod's image and arguments cannot be updated in place.
+start_speedbump() {
+  build_speedbump_image
+
+  kubectl -n "$NAMESPACE" expose deployment "$PROXY_DEPLOYMENT" \
+    --name "$PROXY_SERVICE" \
+    --port 8080 \
+    --dry-run=client \
+    -o yaml | kubectl -n "$NAMESPACE" apply -f -
+
+  kubectl -n "$NAMESPACE" delete pod "$SPEEDBUMP_POD" --ignore-not-found --timeout "$TIMEOUT"
+  kubectl -n "$NAMESPACE" run "$SPEEDBUMP_POD" \
+    --image="$SPEEDBUMP_IMAGE" \
+    --image-pull-policy=IfNotPresent \
+    --port="$SPEEDBUMP_PORT" \
+    -- --port="$SPEEDBUMP_PORT" --latency="$SPEEDBUMP_LATENCY" "$PROXY_SERVICE:8080"
+  kubectl -n "$NAMESPACE" wait --for=condition=Ready "pod/$SPEEDBUMP_POD" --timeout=60s
+}
+
+stop_speedbump() {
+  kubectl -n "$NAMESPACE" delete pod "$SPEEDBUMP_POD" --ignore-not-found --timeout "$TIMEOUT"
+  kubectl -n "$NAMESPACE" delete service "$PROXY_SERVICE" --ignore-not-found --timeout "$TIMEOUT"
+}
+
 deploy() {
   echo "Deploying to context '$1', namespace '$NAMESPACE'"
 
@@ -75,13 +120,15 @@ deploy() {
     --wait \
     --timeout "$TIMEOUT"
 
-  echo "Deployment complete. To reach the service at http://localhost:8080, run:"
-  echo "  kubectl -n $NAMESPACE port-forward deployment/$PROXY_DEPLOYMENT 8080:8080"
+  start_speedbump
+
+  echo "Deployment complete. See README.md to port-forward speedbump to localhost:$SPEEDBUMP_PORT."
 }
 
 teardown() {
   echo "Tearing down from context '$1', namespace '$NAMESPACE'"
 
+  stop_speedbump
   # The app goes first so it is not left running without its database.
   helm uninstall "$APP_RELEASE" --namespace "$NAMESPACE" --ignore-not-found --wait --timeout "$TIMEOUT"
   helm uninstall "$POSTGRES_RELEASE" --namespace "$NAMESPACE" --ignore-not-found --wait --timeout "$TIMEOUT"
