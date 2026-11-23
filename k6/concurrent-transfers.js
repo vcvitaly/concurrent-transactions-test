@@ -3,6 +3,9 @@
 //
 //   k6 run k6/concurrent-transfers.js
 //   k6 run -e BASE_URL=http://localhost:8080 -e VUS_PER_SENDER=20 k6/concurrent-transfers.js
+//   k6 run -e SUMMARY_FILE=run-1-summary.json k6/concurrent-transfers.js
+//
+// The end-of-test summary is saved to SUMMARY_FILE (default: summary.json). Its directory must exist.
 
 import { check } from 'k6';
 import exec from 'k6/execution';
@@ -14,6 +17,7 @@ const INITIAL_BALANCE = 1000;
 const TRANSFER_AMOUNT = 1;
 const TRANSFERS_PER_SENDER = Number(__ENV.TRANSFERS_PER_SENDER || 500);
 const VUS_PER_SENDER = Number(__ENV.VUS_PER_SENDER || 1);
+const SUMMARY_FILE = __ENV.SUMMARY_FILE || 'summary.json';
 
 const transfersSucceeded = new Counter('transfers_succeeded');
 const transfersFailed = new Counter('transfers_failed');
@@ -104,4 +108,33 @@ export function teardown({ runId, accounts }) {
     // Teardown checks can land after threshold evaluation, so fail the run explicitly.
     exec.test.fail(`Final state is wrong: ${errors.join('; ')}`);
   }
+}
+
+// Defining handleSummary replaces k6's default end-of-test output, so print the key results too.
+export function handleSummary(data) {
+  const count = (name) => data.metrics[name]?.values.count ?? 0;
+  const checks = data.metrics.checks?.values ?? {};
+  const latency = data.metrics.http_req_duration?.values ?? {};
+  const failedThresholds = Object.entries(data.metrics).flatMap(([metric, { thresholds = {} }]) =>
+    Object.entries(thresholds)
+      .filter(([, result]) => !result.ok)
+      .map(([threshold]) => `${metric}: ${threshold}`),
+  );
+
+  const lines = [
+    '',
+    `transfers: ${count('transfers_succeeded')} succeeded, ${count('transfers_failed')} failed, ` +
+      `${count('transfer_retries')} retries, ${count('transfers_replayed')} replayed`,
+    `checks: ${checks.passes ?? 0} passed, ${checks.fails ?? 0} failed`,
+    `http_req_duration: avg=${latency.avg?.toFixed(2)}ms p(95)=${latency['p(95)']?.toFixed(2)}ms ` +
+      `max=${latency.max?.toFixed(2)}ms`,
+    `thresholds: ${failedThresholds.length === 0 ? 'all passed' : `FAILED ${failedThresholds.join(', ')}`}`,
+    `writing summary to ${SUMMARY_FILE}`,
+    '',
+  ];
+
+  return {
+    [SUMMARY_FILE]: JSON.stringify(data, null, 2),
+    stdout: lines.join('\n'),
+  };
 }

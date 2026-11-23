@@ -57,7 +57,7 @@ kubectl -n concurrent-transactions port-forward pod/speedbump 8081:8081
 Run the load test through it:
 
 ```bash
-k6 run --no-connection-reuse -e BASE_URL=http://localhost:8081 k6/concurrent-transfers.js
+k6 run --no-connection-reuse -e BASE_URL=http://localhost:8081 -e SUMMARY_FILE=run-(date +%s)-summary.json k6/concurrent-transfers.js
 ```
 
 Remove speedbump before running `./deploy.sh --teardown`:
