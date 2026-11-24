@@ -4,16 +4,17 @@
 
 See proposal.md for motivation and specs/ for the required behavior. These parts of the current setup shape the approach:
 
-- The service runs as 2 replicas behind a ClusterIP Service. Load tests reach it through two hops: k6 → speedbump (a latency proxy pod) → socat proxy → Service. Anything exposed on port 8080 is reachable through that path.
-- `TransferService.transfer` is `@Transactional`. It locks both accounts with `SELECT ... ORDER BY id FOR UPDATE` (`AccountDao.findByIdsForUpdate`), inserts the transfer with `ON CONFLICT DO NOTHING` for idempotency, then withdraws and deposits. `TransferController` maps the result to 201 or 200. Exceptions are mapped to HTTP statuses by `ApiExceptionHandler`.
-- The Helm charts in `helm/` are hand-written, with restricted security contexts. `deploy.sh` installs them with `--wait` and builds third-party images itself rather than adding Helm repositories.
-- The Postgres chart uses a StatefulSet with a volume claim template. Teardown deletes that PVC explicitly, because claims outlive the release.
-- The probes are TCP checks, because the service has no HTTP health endpoint yet.
+- **Cluster:** a kind cluster provisioned by Docker Desktop. Its kubeconfig points the API server at `https://127.0.0.1:<port>` on the Mac host. From inside a Docker container, `127.0.0.1` is the container itself, while `host.docker.internal` reaches the host.
+- **Load-test path:** the service runs as 2 replicas behind a ClusterIP Service. Load tests go k6 → speedbump → socat proxy → Service, so anything exposed on port 8080 is reachable through that path.
+- **App pod labels:** `app.kubernetes.io/name=concurrent-transactions` plus the instance label. Proxy pods use a `-proxy` name label, so a label selector can tell them apart.
+- **Transfer flow:** `TransferService.transfer` is `@Transactional`. It locks both accounts with `SELECT ... ORDER BY id FOR UPDATE` (`AccountDao.findByIdsForUpdate`), inserts the transfer with `ON CONFLICT DO NOTHING` for idempotency, then withdraws and deposits. `TransferController` maps the result to 201 or 200, and `ApiExceptionHandler` maps exceptions to statuses.
+- **Existing tooling:** the charts in `helm/` are hand-written, with restricted security contexts. `deploy.sh` is a strict-mode bash script with `deploy` and `--teardown` modes. Teardown uninstalls the releases but keeps the namespace and the kind cluster.
+- **Probes:** they are TCP checks, because the service has no HTTP health endpoint yet.
 
 ## Goals / Non-Goals
 
 **Goals:**
-- Keep the infrastructure small: one Prometheus pod, no operator, no CRDs, no RBAC.
+- Keep the cluster and the metrics store as two separate concerns. The cluster holds only what lets it be scraped (an identity). Prometheus and its data live in Docker and are managed only by `metrics.sh`.
 - Leave the request path and the k6 setup unchanged. Metrics and health checks must not add hops or ports to the load-test path.
 - Keep the instrumentation code in one place and easy to read next to the transfer logic.
 
@@ -21,37 +22,105 @@ See proposal.md for motivation and specs/ for the required behavior. These parts
 - Dashboards (Grafana), alerting rules, recording rules.
 - Metrics for the account endpoints beyond what the built-in HTTP metrics give.
 - Scraping Postgres, speedbump or the socat proxy.
+- Backfilling local data into VictoriaMetrics with `promtool`, and running VictoriaMetrics as a production long-term store. The optional local VictoriaMetrics is for trying out forwarding.
 
 ## Decisions
 
 ### D1. The app exposes metrics for Prometheus to pull, instead of pushing them
-Prometheus scrapes `/actuator/prometheus`. Pulling gives an `up` series per replica, which shows dead or hung pods during stress tests. The app also doesn't need to know where Prometheus is, deploy order doesn't matter, and the scrape interval is set in one place.
-- *Alternative: OTLP push from Micrometer.* It needs no discovery, but there is no `up` signal, and the app would depend on the metrics server being reachable. Rejected for the app. Pushing stays the right choice for k6 (D8), because k6 is short-lived and the cluster can't reach the laptop it runs on.
+Prometheus scrapes `/actuator/prometheus`. Pulling gives an `up` series per replica, which shows dead or hung pods during stress tests, and the app never needs to know where Prometheus is.
+- *Alternative: OTLP push from the app.* It has no `up` signal and couples the app to the metrics endpoint. Rejected. Pushing is used only for k6 (D9), which is short-lived and runs on the host.
 
-### D2. Use Prometheus instead of VictoriaMetrics
-Prometheus is the default that the Micrometer, k6 and Kubernetes docs assume, and it has a built-in query UI. At this scale the two use about the same resources. If long-term storage is ever needed, Prometheus can forward to VictoriaMetrics with `remote_write`, and the app doesn't change.
+### D2. Use Prometheus as the local store and VictoriaMetrics as optional long-term storage
+Prometheus is the default that the Micrometer, k6 and Kubernetes docs assume, and it has a built-in query UI. VictoriaMetrics receives a continuous copy through `remote_write` (D8), so the local Prometheus can be removed without losing data.
 
-### D3. A hand-rolled `helm/prometheus` chart
-The chart has a StatefulSet (`prom/prometheus`, pinned tag), a ConfigMap holding `prometheus.yml`, and a ClusterIP Service on 9090. Its style matches `helm/postgres`: helpers, restricted security context, no service account token. The pod runs as 65534 with `fsGroup: 65534` so it can write to the volume, with a read-only root filesystem. A `checksum/config` annotation on the pod template restarts Prometheus when the scrape config changes, so `--web.enable-lifecycle` isn't needed.
-- *Alternative: `prometheus-community/prometheus`.* By default it also installs Alertmanager, node-exporter, kube-state-metrics and Pushgateway, and it needs a Helm repository.
-- *Alternative: `kube-prometheus-stack`.* An operator plus CRDs is far beyond what this needs.
+### D3. Prometheus runs in Docker Compose, managed by `metrics.sh`
+- **Compose stack** (`metrics/compose.yaml`): the `prom/prometheus` service with a pinned 3.x tag, published on `127.0.0.1:9090`, with the named volume `prometheus-data` and `extra_hosts: host.docker.internal:host-gateway` for portability. It mounts the rendered config and the credentials directory from `.metrics/` read-only.
+- **Prometheus flags:**
+  - `--storage.tsdb.retention.time` and `--storage.tsdb.retention.size`
+  - `--web.enable-remote-write-receiver` (for k6)
+  - `--web.enable-lifecycle` (so the config can be reloaded without a restart)
+- **Optional local VictoriaMetrics:** a `victoriametrics` service under the Compose profile `victoriametrics`, using the pinned `victoriametrics/victoria-metrics` image, published on `127.0.0.1:8428`, with its own volume.
+- **`metrics.sh` commands,** written in the strict-bash style of `deploy.sh`:
+  - `up [--local-vm]`: render the config (D7), then `docker compose up -d`, then wait for `/-/ready`
+  - `reload`: re-render the config and `POST /-/reload`
+  - `down`: stop the containers, keeping the volumes
+  - `reset`: remove the Prometheus container and only the `prometheus-data` volume, after an interactive confirmation or `--yes`. The local VictoriaMetrics volume survives, because it is the long-term copy. It is deleted only with `reset --include-vm`
+  - `forwarding-status`: the check in D8
+- *Alternative: in-cluster Prometheus with a kept PVC.* This is what the earlier version of this design chose. It ties the store's lifecycle to the cluster. Rejected at the user's request.
+- *Alternative: an in-cluster agent pushing to Docker.* Discovery is simpler, but it puts a workload in the cluster. Rejected in favor of pulling through the API server.
 
-### D4. Find replicas through DNS on a headless Service
-The app chart gains a headless Service `<fullname>-metrics` (`clusterIP: None`, management port only, same pod selector) with `publishNotReadyAddresses: true`. Prometheus uses `dns_sd_configs` (type A, port 8090, `refresh_interval: 5s`) on that name, which `deploy.sh` passes to the Prometheus chart as a value. Each pod IP becomes its own target, and its `instance` label is `<pod-ip>:8090`.
-- Publishing not-ready addresses means an unready replica, for example one whose connection pool is exhausted, is still scraped. Its metrics are often what explains why it became unready.
-- *Alternative: `kubernetes_sd_configs` (role: pod).* It gives pod-name labels, but needs a ServiceAccount, Role and RoleBinding. Rejected for now. It's the upgrade path if IP-based `instance` labels become a problem.
-- *Alternative: scraping the existing ClusterIP Service.* Each scrape would hit a random replica and mix their counters. Rejected.
+### D4. Find pods through the Kubernetes API and scrape through the API server's pod proxy
+One scrape job uses `kubernetes_sd_configs` with `role: pod`, limited to the app namespace and the label selector `app.kubernetes.io/name=concurrent-transactions`.
+- **Connection:** `api_server` is `https://host.docker.internal:<port>`. Auth is `authorization.credentials_file`, pointing at the token. TLS uses `ca_file` plus `server_name` set to a name in the API server certificate's SANs (D10).
+- **Relabeling:**
+  - keep only the container port named `management`
+  - set `__address__` to the API server's host and port
+  - set `__metrics_path__` to `/api/v1/namespaces/<ns>/pods/<pod>:8090/proxy/actuator/prometheus`
+  - use `scheme: https`, with the same authorization and TLS settings as discovery
+  - set `instance` from `__meta_kubernetes_pod_name`, and add the `namespace` and `pod` labels
+- `scrape_interval: 5s`.
+- *Alternative: scrape pod IPs directly.* Docker Desktop doesn't route pod IPs to the host. Rejected.
+- *Alternative: scrape through a Service.* Each scrape would hit a random replica and mix their counters. Rejected.
+- Pods that are not ready stay in API discovery, so a replica that is failing readiness is still scraped.
 
-### D5. Management port 8090 serves health and Prometheus only
-`management.server.port: 8090`. The exposed endpoints are `health` and `prometheus`. Health probe groups are enabled, so `/actuator/health/liveness` and `/actuator/health/readiness` exist. The socat proxy only forwards the Service's `http` port, so 8090 is not on the load-test path. 8090 also avoids two confusing overlaps: 8081 (speedbump) and 9090 (Prometheus).
-- Liveness uses the liveness state only. It doesn't include a database check, so a Postgres outage doesn't cause restart loops.
-- Readiness uses Spring's readiness state, which becomes ready after the context has started. Flyway runs during startup, so migrations finish before the replica is ready.
-- The Helm probes switch to `httpGet` on a named `management` port. The startup probe uses the readiness path and keeps its current generous `failureThreshold`.
+### D5. A least-privilege scrape identity in the app chart
+Behind `metrics.scraper.enabled` (default `true`), the app chart adds:
+- a ServiceAccount `<fullname>-scraper`
+- a Role with `pods: get, list, watch` and `pods/proxy: get`, in the release namespace only
+- a RoleBinding
+- a Secret of type `kubernetes.io/service-account-token` annotated for that ServiceAccount
 
-### D6. Instrumentation sits outside the transaction
-Outcome counting and duration timing happen in `TransferController.transfer`, around the call to the transactional `TransferService` proxy. Any exception thrown by the proxy, including one from a failed commit, reaches the controller. The controller starts a `Timer.Sample`, calls the service, maps the result or exception to an outcome, records `transfers` and `transfer.duration`, then returns the result or rethrows. Rethrowing keeps `ApiExceptionHandler` as the only place that maps HTTP statuses. A small `TransferMetrics` component owns the meters and the outcome mapping, so the controller stays short.
+The Secret gives a token that doesn't expire and is revoked automatically when the release is uninstalled. That fits the requirement that the identity ends with the cluster deploy.
+- *Alternative: `kubectl create token`.* The token expires, and long sessions would stop scraping mid-run. Rejected.
+- *Alternative: mounting the developer's kubeconfig.* It gives cluster-admin to a container and is ruled out by the spec. Rejected.
 
-Outcomes:
+### D6. `deploy.sh` writes the credentials, and only the credentials
+After `helm upgrade --install` of the app, `deploy.sh` waits until the token Secret's `.data.token` has been filled in, then writes three files into `.metrics/k8s/` with mode 600 and an atomic write (temp file then `mv`):
+- `token`
+- `ca.crt`
+- `api-server`: the kubeconfig's server URL, with `127.0.0.1`/`localhost` rewritten to `host.docker.internal`
+
+Prometheus re-reads `credentials_file` on every request, so a redeploy's new token is used without a restart. `deploy.sh --teardown` leaves the files in place. The token is revoked anyway when the Secret is deleted. `.metrics/` is added to `.gitignore`.
+- If `api-server` or `ca.crt` changed, which only happens when the kind cluster itself is recreated, `deploy.sh` prints a hint to run `./metrics.sh reload`. It never calls `metrics.sh` itself, so the two concerns stay separate.
+
+### D7. The Prometheus config is rendered from a template
+`metrics/prometheus.yml.tmpl` is rendered by `metrics.sh` into `.metrics/prometheus.yml`. It fills in:
+- the API server address from `.metrics/k8s/api-server`
+- the namespace (`NAMESPACE`, default `concurrent-transactions`, the same as in `deploy.sh`)
+- the TLS server name
+- a `remote_write` block, only when `VM_REMOTE_WRITE_URL` is set, or set implicitly by `--local-vm` to `http://victoriametrics:8428/api/v1/write`
+
+Prometheus doesn't expand environment variables in `remote_write` or `kubernetes_sd_configs`, so rendering the config is the simplest option. `metrics.sh up` without `.metrics/k8s/` still starts Prometheus, but with no Kubernetes scrape job, and prints a hint to run `./deploy.sh` first. That way the store can run with no cluster at all.
+
+### D8. Forwarding to VictoriaMetrics and the check before removal
+`remote_write` reads from the WAL, so samples Prometheus received by remote write (k6) are forwarded too, and short outages are caught up from the WAL (about 2h by default).
+
+`metrics.sh forwarding-status` queries Prometheus's own metrics. It reports "caught up" when both of these hold:
+- `prometheus_remote_storage_samples_pending` is 0
+- the gap between `prometheus_remote_storage_highest_timestamp_in_seconds` and `prometheus_remote_storage_queue_highest_sent_timestamp_seconds` is below 2 scrape intervals
+
+The README tells developers to run this check before `metrics.sh reset`. It also says that data collected before forwarding was turned on is not sent (`remote_write` only covers the WAL window).
+
+### D9. k6 pushes to Prometheus on localhost
+The README documents `-o experimental-prometheus-rw` with `K6_PROMETHEUS_RW_SERVER_URL=http://localhost:9090/api/v1/write` and `K6_PROMETHEUS_RW_TREND_STATS`. The existing `SUMMARY_FILE` flow is unchanged.
+
+### D10. Reaching the API server from the container needs a check first
+The kind API server certificate is expected to list `localhost`, `127.0.0.1` and `kubernetes` in its SANs, but not `host.docker.internal`. The plan is to connect to `host.docker.internal:<port>` with `tls_config.server_name: localhost`.
+- A spike task checks this against the real Docker Desktop kind cluster before the chart and script work depends on it: `curl --resolve` from a container, with the token and CA.
+- If it fails, the fallback order is:
+  1. try another SAN as `server_name`
+  2. attach the container to Docker Desktop's kind network and use the control-plane hostname
+  3. last resort, documented as local-only: `insecure_skip_verify`
+
+### D11. Management port 8090 serves health and Prometheus only
+`management.server.port: 8090`. The exposed endpoints are `health` and `prometheus`, with the liveness and readiness groups enabled.
+- Liveness has no database check, so a Postgres outage doesn't cause restart loops.
+- Readiness becomes ready after the context has started, which is after Flyway migrations.
+- The Helm probes switch to `httpGet` on the named `management` port.
+- The socat proxy forwards only the Service's `http` port, so 8090 is reachable only through the API server's pod proxy.
+
+### D12. Instrumentation sits outside the transaction
+Outcome counting and duration timing happen in `TransferController.transfer`, around the call to the transactional `TransferService` proxy, so a failed commit reaches the controller as an exception. A `TransferMetrics` component owns the meters and the outcome mapping. The controller records the outcome and rethrows, so `ApiExceptionHandler` remains the only place that maps HTTP statuses.
 
 | Result | Outcome |
 |---|---|
@@ -62,42 +131,31 @@ Outcomes:
 | `IllegalArgumentException` | `invalid` |
 | anything else | `error` |
 
-- *Alternative: `@Observed` on the service, or an aspect.* Without careful advice ordering, the aspect could run inside the transaction boundary and count `created` before a failed commit. It is also harder to follow. Rejected.
-- *Alternative: the built-in `http.server.requests` metric with a `status` tag.* It can't tell 409 from 500 causes, and it has no SQLSTATE. It stays available as a cross-check.
+- *Alternative: `@Observed` on the service, or an aspect.* It risks running inside the transaction boundary and counting `created` before a failed commit. Rejected.
 
-### D7. Measure lock wait inside the service, and classify database errors by SQLSTATE
-- **Lock wait:** `transfer.lock.wait` wraps the `accountDao.findByIdsForUpdate` call in `TransferService.forTransfer`, with a try/finally so failures are timed too. The lock call is the only place where the wait can be measured precisely.
-- **Database errors:** when the outcome mapping in D6 sees a `DataAccessException` (or any exception with a `SQLException` in its cause chain), it reads `getSQLState()` from the innermost `SQLException` and increments `transfer.db.errors` with that `sqlstate` tag, or `unknown` if there is none. This covers the 409 `DataIntegrityViolationException` path (for example `23505`) as well as deadlocks and serialization failures.
-- **Meter names** (Micrometer → Prometheus): `transfers` → `transfers_total`, `transfer.duration` → `transfer_duration_seconds`, `transfer.lock.wait` → `transfer_lock_wait_seconds`, `transfer.db.errors` → `transfer_db_errors_total`. `percentiles-histogram` is enabled only for `transfer.duration` and `transfer.lock.wait`, to keep the number of bucket series small.
-
-### D8. k6 pushes to Prometheus by remote write
-Prometheus runs with `--web.enable-remote-write-receiver`. The README documents running k6 with `-o experimental-prometheus-rw` and `K6_PROMETHEUS_RW_SERVER_URL=http://localhost:9090/api/v1/write` through the Prometheus port-forward. Set `K6_PROMETHEUS_RW_TREND_STATS` so latency trends are exported. Pushing is optional, and the existing `SUMMARY_FILE` flow is unchanged.
-
-### D9. Teardown keeps the metrics volume
-Prometheus stores data in a StatefulSet volume claim template (`data-prometheus-0`). `helm uninstall` leaves claims created from templates in place. `deploy.sh --teardown` uninstalls the Prometheus release and does **not** delete that claim, unlike the Postgres one. Its closing message names the kept PVC and gives the delete command. The next deploy recreates `prometheus-0`, which mounts the same claim and loads the existing TSDB. Retention uses both `--storage.tsdb.retention.time` (default 15d) and `--storage.tsdb.retention.size`, set below the volume size, so the volume never fills.
-- *Alternative: leave Prometheus running during teardown.* A teardown that leaves pods behind would be surprising. Rejected.
-- *Alternative: a separate PVC with `helm.sh/resource-policy: keep`.* This also works, but the volume claim template matches the Postgres chart and needs no extra template.
-
-### D10. Changes to `deploy.sh`
-It gets `PROMETHEUS_RELEASE="prometheus"` and installs that release after the app, passing `scrape.dnsName=<app-fullname>-metrics` (`app-concurrent-transactions-metrics`) and the port, again with `--wait`. Teardown order: speedbump, app, Prometheus (volume kept), Postgres, then delete the Postgres PVC.
+### D13. Measure lock wait inside the service, and classify database errors by SQLSTATE
+- **Lock wait:** `transfer.lock.wait` wraps `accountDao.findByIdsForUpdate` in `TransferService.forTransfer`, with a try/finally so failures are timed too.
+- **Database errors:** for an exception whose cause chain contains a `SQLException`, `TransferMetrics` takes the innermost one's `getSQLState()` and increments `transfer.db.errors{sqlstate}`, using `unknown` when there is none. This covers the 409 path (for example `23505`), deadlocks and serialization failures.
+- **Meter names** (Micrometer → Prometheus): `transfers` → `transfers_total`, `transfer.duration` → `transfer_duration_seconds`, `transfer.lock.wait` → `transfer_lock_wait_seconds`, `transfer.db.errors` → `transfer_db_errors_total`. `percentiles-histogram` is enabled only for the two timers.
 
 ## Risks / Trade-offs
 
-- [Spring Boot 4 split Actuator and Micrometer into new module artifacts, so names from older docs may not resolve] → Confirm the exact starter coordinates against the Boot 4.1 reference before writing `build.gradle`, and fail fast in the integration tests if `/actuator/prometheus` is missing.
-- [With DNS discovery, `instance` is a pod IP, which changes every rollout, so per-replica series break across deploys] → Acceptable for comparing load-test runs, where you aggregate with `sum`. Switch to `kubernetes_sd_configs` if per-pod history matters.
-- [The kept PVC keeps using disk after every teardown] → The size-based retention caps it, and the teardown message names the PVC and the delete command.
-- [After a rollback that downgrades Prometheus, the newer TSDB format on the kept volume may not open] → Pin the image tag. On a failed start, delete the PVC, since metrics history isn't critical.
-- [A 5s scrape interval and histograms add load] → About 2 targets × a few hundred series. This is negligible next to the load test.
-- [Moving the probes onto 8090 means a broken management server marks pods unready even if the API works] → This is intended, since health and metrics are part of the deliverable. The startup probe's threshold stays generous.
-- [A failed commit is attributed to `error`, and lock wait isn't recorded if the request fails before reaching the lock (validation)] → This matches the specs. The validation path never waits for a lock.
+- [The TLS check against `host.docker.internal` may fail with the certificate's SANs] → The spike task in D10 runs first, with an ordered list of fallbacks.
+- [Spring Boot 4 split Actuator and Micrometer into new module artifacts, so names from older docs may not resolve] → Confirm the coordinates against the Boot 4.1 reference first, and fail fast in the integration tests if `/actuator/prometheus` is missing.
+- [Scraping through the API server proxy adds load and latency to the API server] → 2 targets every 5s is negligible. Scrape timing includes one extra hop, which doesn't affect the metric values.
+- [After a cluster teardown, discovery fails and all targets disappear or go down] → This is expected and visible as `up` and SD error metrics. History is unaffected, and scraping resumes after the next `deploy.sh` (spec: credentials follow redeploys).
+- [The token sits in a local file] → `.metrics/` is git-ignored and the files have mode 600. The token only grants pod read and proxy access in one namespace, and is revoked on teardown.
+- [The pod proxy can reach any port of any pod in the namespace (`pods/proxy`), not just 8090] → Acceptable for a local test namespace. Note it in the README. A tighter scope would need per-pod `resourceNames`, which change on every rollout.
+- [The VictoriaMetrics URL can be set after data has already been collected] → The README states that older data is not backfilled. `forwarding-status` only vouches for data that has gone through the WAL.
+- [`metrics.sh reset` deletes data] → It needs confirmation or `--yes`, and its prompt suggests `forwarding-status` first.
 
 ## Migration Plan
 
-1. Deploy the app changes first. Running `./deploy.sh` on an existing namespace rolls the app with HTTP probes and the headless metrics Service, then installs Prometheus.
-2. Check that both targets are up in the Prometheus UI and run a k6 run. The README queries should then return data.
-3. To roll back: `helm rollback app` restores the TCP probes and removes the headless Service, and `helm uninstall prometheus` stops collection. The metrics PVC can stay or be deleted by hand.
+1. Deploy the app changes with `./deploy.sh`. The app rolls out with HTTP probes and the scrape identity, and `.metrics/k8s/` is written.
+2. Run `./metrics.sh up`, or `./metrics.sh up --local-vm`. Check that 2 `up` targets named after the pods appear in `localhost:9090`.
+3. To roll back: `helm rollback app` restores the TCP probes and removes the scrape identity, and `./metrics.sh down` stops collection. Volumes stay until `./metrics.sh reset`.
 
 ## Open Questions
 
-- The exact retention values and volume size (for example 15d, 1.5GB of 2Gi). These can be tuned in `values.yaml` without changing the specs.
-- The Prometheus image tag to pin. Pick the current 3.x release at implementation time.
+- The exact retention values (for example 15d and 2GB). They are set in the Compose file and can be tuned without changing the specs.
+- The Prometheus and VictoriaMetrics image tags to pin. Pick the current stable releases at implementation time.

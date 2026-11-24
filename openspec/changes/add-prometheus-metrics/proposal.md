@@ -2,7 +2,7 @@
 
 ## Why
 
-The project exists to show that transfers stay correct under contention, but a run's only output today is the k6 summary on the client: there is no server-side view of lock waits, idempotent replays, database errors or per-replica behavior while a load test runs. Adding metrics now gives every k6 run a server-side timeline, and the history kept across redeploys lets runs be compared with each other.
+The project exists to show that transfers stay correct under contention, but a run's only output today is the k6 summary on the client: there is no server-side view of lock waits, idempotent replays, database errors or per-replica behavior while a load test runs. Adding metrics now gives every k6 run a server-side timeline. Keeping the metrics store outside the cluster means history survives cluster teardowns and can be compared across runs. It can also be forwarded to long-term storage before the local store is removed.
 
 ## What Changes
 
@@ -15,18 +15,19 @@ The project exists to show that transfers stay correct under contention, but a r
   - Tags never include account IDs or idempotency keys.
 - Built-in Micrometer metrics (HTTP server, Hikari pool, JVM) are exposed with no extra work.
 - The app's startup, readiness and liveness probes switch from TCP checks to the Actuator HTTP health endpoints.
-- A new hand-rolled Helm chart `helm/prometheus` deploys a single Prometheus server. It:
-  - scrapes every app replica every 5s, finding pods through a headless Service (DNS discovery, no RBAC)
-  - stores its data on a persistent volume with time-based retention
-  - accepts remote write, so k6 can optionally push its client-side metrics.
-- `deploy.sh` installs or upgrades Prometheus. `--teardown` uninstalls it but **keeps the Prometheus volume**, so metrics history survives teardown and is picked up again by the next deploy. Only the database volume is still deleted.
-- The README documents port-forwarding the Prometheus UI, a few starter queries, and the optional k6 remote-write output.
+- **Prometheus runs in Docker, outside the cluster.** A new `metrics.sh` script and its Docker Compose stack manage it. Its lifecycle is separate from `deploy.sh`, and its data lives in a Docker volume that only an explicit reset removes. It:
+  - discovers app pods through the Kubernetes API and scrapes each one every 5s through the API server's pod proxy, with the pod name as `instance`
+  - accepts remote write, so k6 can push its client-side metrics to `localhost` with no port-forward
+  - optionally forwards everything it ingests to VictoriaMetrics by remote write, for long-term storage. The README documents how to check that forwarding has caught up before Prometheus is removed.
+- The app chart adds a scrape identity: a ServiceAccount whose Role only lets it list and watch pods and use the pod proxy in the app's namespace, plus a token Secret for it.
+- After each install, `deploy.sh` writes that identity's token, the cluster CA and the API server address to a git-ignored local directory that Prometheus reads. `deploy.sh` never starts, stops or deletes Prometheus or its data.
+- The README documents the metrics commands, example queries, the optional k6 remote-write output, the VictoriaMetrics forwarding setup and the safe-removal check.
 
 ## Capabilities
 
 ### New Capabilities
 - `transfer-metrics`: transfer-specific metrics the service exposes (outcomes, latency, lock wait, database errors), with low-cardinality tags and outcomes recorded after commit.
-- `metrics-collection`: collecting, storing and querying metrics in the cluster: a Prometheus deployment that scrapes every replica, keeps history across teardown and redeploys, and accepts remote write from k6.
+- `metrics-collection`: collecting, storing and querying metrics from a Prometheus server outside the cluster. It scrapes every replica through the Kubernetes API with a least-privilege identity, keeps history independently of the cluster, accepts remote write from k6, and optionally forwards to VictoriaMetrics.
 - `service-health`: HTTP health endpoints that the Kubernetes probes use to decide whether the service has started, is ready and is alive.
 
 ### Modified Capabilities
@@ -36,7 +37,12 @@ The project exists to show that transfers stay correct under contention, but a r
 
 - **Dependencies:** `build.gradle` gains the Actuator starter and `micrometer-registry-prometheus`. The exact artifact names must be checked against Spring Boot 4's modular starters.
 - **Code:** the `transfer` package (instrumentation outside the `@Transactional` boundary, lock-wait timing around `AccountDao.findByIdsForUpdate`, SQLSTATE classification), and `application.yaml` (management port and exposed endpoints).
-- **Helm:** `helm/concurrent-transactions` gains a management port, a headless metrics Service and HTTP probes in `values.yaml` and its templates. A new `helm/prometheus` chart is added.
-- **Scripts and docs:** `deploy.sh` (new release, teardown that keeps the volume) and `README.md`.
-- **Cluster resources:** one more pod (Prometheus, roughly 100–200 Mi of memory) and one PVC that persists until it is deleted by hand.
-- **Out of scope:** Grafana, alerting, and pushing metrics from the app.
+- **Helm:** `helm/concurrent-transactions` gains a management port, HTTP probes, and the scrape identity (ServiceAccount, Role, RoleBinding, token Secret). No metrics workload runs in the cluster.
+- **New local tooling:** `metrics.sh`, a `metrics/` directory (Compose file and Prometheus config template), and a git-ignored `.metrics/` directory for the generated config and credentials.
+- **Scripts and docs:** `deploy.sh` (writes the scrape credentials), `.gitignore` and `README.md`.
+- **Local resources:** one Prometheus container (plus an optional local VictoriaMetrics container) and their Docker volumes. They persist until reset explicitly.
+- **Out of scope:**
+  - Grafana and alerting
+  - pushing metrics from the app
+  - scraping the Docker Compose app in `docker-compose.yaml`
+  - backfilling data collected before forwarding to VictoriaMetrics was turned on
