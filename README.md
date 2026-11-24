@@ -1,5 +1,7 @@
 # Concurrent Transactions Test
 
+## How to run
+
 Start the infrastructure:
 
 ```bash
