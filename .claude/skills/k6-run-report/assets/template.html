@@ -1,0 +1,466 @@
+<title>__TITLE__</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap">
+<style>
+/* Layout: a single report column; summary first, then latency strips, baseline comparison, timings, checks, notes. */
+:root {
+  --bg: #f5f7f9;
+  --surface: #ffffff;
+  --fg: #16202b;
+  --muted: #5a6877;
+  --line: #d8dfe6;
+  --track: #e6ebf0;
+  --accent: #1f6f8b;
+  --accent-soft: #cfe5ee;
+  --good: #1d7a4c;
+  --good-soft: #dcf1e5;
+  --warn: #9a5b00;
+  --warn-soft: #fbecd2;
+  --bad: #b3362f;
+  --bad-soft: #f8dfdc;
+  --font-body: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0f1418; --surface: #161d23; --fg: #e3e9ee; --muted: #93a2b0; --line: #2a343d; --track: #232d35;
+    --accent: #5fb6d4; --accent-soft: #1d3c49;
+    --good: #5cc98f; --good-soft: #173528; --warn: #e0a54a; --warn-soft: #3b2b12; --bad: #f07d73; --bad-soft: #3d1d1b;
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #0f1418; --surface: #161d23; --fg: #e3e9ee; --muted: #93a2b0; --line: #2a343d; --track: #232d35;
+  --accent: #5fb6d4; --accent-soft: #1d3c49;
+  --good: #5cc98f; --good-soft: #173528; --warn: #e0a54a; --warn-soft: #3b2b12; --bad: #f07d73; --bad-soft: #3d1d1b;
+  color-scheme: dark;
+}
+body {
+  background: var(--bg);
+  color: var(--fg);
+  font-family: var(--font-body);
+  font-size: 15px;
+  line-height: 1.55;
+}
+.wrap {
+  max-width: 980px;
+  margin: 0 auto;
+  padding-block: 2.5rem 4rem;
+  padding-left: max(16px, env(safe-area-inset-left, 0px));
+  padding-right: max(16px, env(safe-area-inset-right, 0px));
+  display: grid;
+  gap: 2.5rem;
+}
+h1, h2, h3 { margin: 0; text-wrap: balance; line-height: 1.2; }
+h1 { font-size: clamp(1.6rem, 4vw, 2.2rem); font-weight: 700; letter-spacing: -0.01em; }
+h2 { font-size: 1.15rem; font-weight: 600; }
+p { margin: 0; max-width: 68ch; }
+.mono, code { font-family: var(--font-mono); font-size: 0.92em; }
+.eyebrow {
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--accent);
+  font-weight: 500;
+}
+.muted { color: var(--muted); }
+section { display: grid; gap: 1rem; min-width: 0; }
+.section-head { display: grid; gap: 0.25rem; }
+
+/* Header */
+header { display: grid; gap: 1rem; }
+.meta { display: flex; flex-wrap: wrap; gap: 0.5rem 1.5rem; font-size: 0.88rem; color: var(--muted); }
+.meta b { color: var(--fg); font-weight: 500; }
+.verdict { display: flex; flex-wrap: wrap; gap: 0.5rem; }
+.pill { display: inline-flex; align-items: center; gap: 0.4rem; padding: 0.25rem 0.7rem; border-radius: 999px; font-size: 0.82rem; font-weight: 500; }
+.pill::before { content: ""; width: 0.5rem; height: 0.5rem; border-radius: 50%; background: currentColor; }
+.pill.good { background: var(--good-soft); color: var(--good); }
+.pill.warn { background: var(--warn-soft); color: var(--warn); }
+.pill.bad { background: var(--bad-soft); color: var(--bad); }
+
+/* KPI tiles */
+.kpis { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); border: 1px solid var(--line); border-radius: 10px; background: var(--surface); overflow: hidden; }
+.kpi { padding: 1rem 1.1rem; display: grid; gap: 0.2rem; align-content: start; border-left: 1px solid var(--line); }
+.kpi:first-child { border-left: 0; }
+.kpi .label { font-size: 0.8rem; color: var(--muted); }
+.kpi .value { font-family: var(--font-mono); font-size: 1.6rem; font-weight: 600; font-variant-numeric: tabular-nums; line-height: 1.2; }
+.kpi .value small { font-size: 0.85rem; font-weight: 500; color: var(--muted); margin-left: 0.2rem; }
+.kpi .sub { font-size: 0.8rem; color: var(--muted); }
+.kpi .sub .bad { color: var(--bad); font-weight: 500; }
+.kpi .sub .good { color: var(--good); font-weight: 500; }
+@media (max-width: 720px) {
+  .kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .kpi:nth-child(3) { border-left: 0; }
+  .kpi:nth-child(n+3) { border-top: 1px solid var(--line); }
+}
+
+/* Latency strips */
+.strips { display: grid; gap: 1.4rem; background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 1.25rem 1.25rem 1rem; }
+.strip { display: grid; gap: 0.45rem; min-width: 0; }
+.strip-title { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 0.25rem 1rem; align-items: baseline; }
+.strip-title .name { font-family: var(--font-mono); font-size: 0.88rem; font-weight: 500; }
+.strip-title .desc { font-size: 0.8rem; color: var(--muted); }
+.bar { position: relative; height: 26px; }
+.bar .track { position: absolute; left: 0; right: 0; top: 12px; height: 2px; background: var(--track); border-radius: 1px; }
+.bar .whisker { position: absolute; top: 12px; height: 2px; background: var(--muted); opacity: 0.6; }
+.bar .box { position: absolute; top: 5px; height: 16px; background: var(--accent-soft); border: 1.5px solid var(--accent); border-radius: 3px; min-width: 3px; box-sizing: border-box; }
+.bar .tick { position: absolute; width: 2px; top: 3px; height: 20px; background: var(--accent); transform: translateX(-1px); }
+.bar .tick.avg { background: var(--warn); }
+.bar .dot { position: absolute; top: 7px; width: 12px; height: 12px; border-radius: 50%; transform: translateX(-6px); background: var(--surface); border: 2px solid var(--bad); box-sizing: border-box; }
+.bar .dot.min { border-color: var(--muted); }
+.stats { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 0.25rem; font-family: var(--font-mono); font-size: 0.8rem; font-variant-numeric: tabular-nums; }
+.stats div { display: grid; }
+.stats span:first-child { color: var(--muted); font-size: 0.72rem; letter-spacing: 0.04em; text-transform: uppercase; }
+@media (max-width: 520px) { .stats { grid-template-columns: repeat(3, minmax(0, 1fr)); row-gap: 0.5rem; } }
+.axis { position: relative; height: 18px; border-top: 1px solid var(--line); margin-top: 0.25rem; }
+.axis span { position: absolute; top: 3px; transform: translateX(-50%); font-family: var(--font-mono); font-size: 0.72rem; color: var(--muted); }
+.axis span:first-child { transform: none; }
+.axis span:last-child { transform: translateX(-100%); }
+.legend { display: flex; flex-wrap: wrap; gap: 0.4rem 1.2rem; font-size: 0.78rem; color: var(--muted); }
+.legend i { display: inline-block; vertical-align: -2px; margin-right: 0.35rem; }
+.lg-box { width: 16px; height: 11px; background: var(--accent-soft); border: 1.5px solid var(--accent); border-radius: 2px; box-sizing: border-box; }
+.lg-tick { width: 2px; height: 12px; background: var(--accent); }
+.lg-avg { width: 2px; height: 12px; background: var(--warn); }
+.lg-dot { width: 10px; height: 10px; border-radius: 50%; border: 2px solid var(--bad); box-sizing: border-box; }
+.lg-whisk { width: 16px; height: 2px; background: var(--muted); opacity: 0.6; vertical-align: 3px !important; }
+
+/* Tables */
+.table-wrap { overflow-x: auto; border: 1px solid var(--line); border-radius: 10px; background: var(--surface); }
+table { width: 100%; border-collapse: collapse; font-size: 0.88rem; }
+th, td { padding: 0.6rem 0.9rem; text-align: right; white-space: nowrap; border-bottom: 1px solid var(--line); }
+th:first-child, td:first-child { text-align: left; }
+tbody tr:last-child td { border-bottom: 0; }
+thead th { font-size: 0.74rem; font-weight: 600; letter-spacing: 0.05em; text-transform: uppercase; color: var(--muted); background: color-mix(in srgb, var(--track) 45%, var(--surface)); }
+td { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+td:first-child { font-family: var(--font-body); }
+td .sub { display: block; font-family: var(--font-body); font-size: 0.76rem; color: var(--muted); }
+.delta { font-weight: 600; }
+.delta.worse { color: var(--bad); }
+.delta.better { color: var(--good); }
+.delta.flat { color: var(--muted); font-weight: 500; }
+
+/* Requests breakdown */
+.split { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 1.25rem; }
+@media (max-width: 760px) { .split { grid-template-columns: minmax(0, 1fr); } }
+.stack { display: flex; height: 14px; border-radius: 4px; overflow: hidden; background: var(--track); }
+.stack span { display: block; height: 100%; }
+.panel { background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 1.1rem 1.2rem; display: grid; gap: 0.9rem; min-width: 0; align-content: start; }
+.rows { display: grid; gap: 0.4rem; font-size: 0.88rem; }
+.rows div { display: flex; justify-content: space-between; gap: 1rem; }
+.rows .k { display: inline-flex; align-items: center; gap: 0.5rem; }
+.rows .k i { width: 10px; height: 10px; border-radius: 2px; display: inline-block; }
+.rows .v { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+
+/* Checks */
+.checks { list-style: none; margin: 0; padding: 0; display: grid; gap: 0.1rem; }
+.checks li { display: flex; justify-content: space-between; gap: 1rem; padding: 0.5rem 0; border-bottom: 1px solid var(--line); font-size: 0.9rem; }
+.checks li:last-child { border-bottom: 0; }
+.checks .status { font-family: var(--font-mono); font-size: 0.8rem; font-weight: 600; white-space: nowrap; }
+.checks .status.ok { color: var(--good); }
+.checks .status.fail { color: var(--bad); }
+
+/* Notes */
+.notes { display: grid; gap: 0.9rem; }
+.note { display: grid; gap: 0.3rem; padding-left: 1rem; border-left: 2px solid var(--line); }
+.note h3 { font-size: 0.95rem; font-weight: 600; }
+.note .src { font-size: 0.76rem; color: var(--muted); font-family: var(--font-mono); }
+footer { font-size: 0.8rem; color: var(--muted); border-top: 1px solid var(--line); padding-top: 1rem; }
+</style>
+
+<div class="wrap">
+  <header>
+    <div class="eyebrow">k6 load test &middot; concurrent transfers</div>
+    <h1 id="title"></h1>
+    <p class="muted" id="context"></p>
+    <div class="meta" id="meta"></div>
+    <div class="verdict" id="verdict"></div>
+  </header>
+
+  <section aria-label="Summary">
+    <div class="kpis" id="kpis"></div>
+  </section>
+
+  <section aria-labelledby="lat-h">
+    <div class="section-head">
+      <h2 id="lat-h">Latency</h2>
+      <p class="muted" id="lat-p"></p>
+    </div>
+    <div class="strips" id="strips"></div>
+    <div class="legend">
+      <span><i class="lg-whisk"></i>min to max</span>
+      <span><i class="lg-box"></i>median to p95</span>
+      <span><i class="lg-tick"></i>p90</span>
+      <span><i class="lg-avg"></i>average</span>
+      <span><i class="lg-dot"></i>max</span>
+    </div>
+  </section>
+
+  <section aria-labelledby="cmp-h" id="cmp-section" hidden>
+    <div class="section-head">
+      <h2 id="cmp-h"></h2>
+      <p class="muted" id="cmp-p"></p>
+    </div>
+    <div class="table-wrap">
+      <table id="cmp">
+        <thead><tr><th>Metric</th><th id="cmp-a"></th><th id="cmp-b"></th><th>Change</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </section>
+
+  <section aria-labelledby="req-h">
+    <div class="section-head">
+      <h2 id="req-h">Requests and connection timings</h2>
+    </div>
+    <div class="split">
+      <div class="panel" id="reqs"></div>
+      <div class="table-wrap">
+        <table id="phases">
+          <thead><tr><th>Phase (ms)</th><th>avg</th><th>med</th><th>p95</th><th>max</th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+
+  <section aria-labelledby="chk-h">
+    <div class="section-head">
+      <h2 id="chk-h">Thresholds and final-state checks</h2>
+    </div>
+    <div class="panel">
+      <ul class="checks" id="checks"></ul>
+    </div>
+  </section>
+
+  <section aria-labelledby="notes-h" id="notes-section">
+    <div class="section-head">
+      <h2 id="notes-h">Reading this run</h2>
+    </div>
+    <div class="notes" id="notes"></div>
+  </section>
+
+  <footer id="footer"></footer>
+</div>
+
+<script>
+const RUN = __RUN__;
+const BASE = __BASE__;
+const META = __META__;
+
+const M = RUN.metrics, B = BASE ? BASE.metrics : null;
+const v = (m, k, src = M) => src?.[m]?.values?.[k];
+const fmt = (n, d = 1) => n == null || Number.isNaN(n) ? "\u2013" : n.toLocaleString("en-US", { minimumFractionDigits: d, maximumFractionDigits: d });
+const ms = (n, d = 1) => n == null ? "\u2013" : fmt(n, d) + " ms";
+const pct = (n, d = 1) => n == null ? "\u2013" : fmt(n * 100, d) + "%";
+const esc = s => String(s).replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+const el = (tag, attrs = {}, html = "") => { const e = document.createElement(tag); Object.assign(e, attrs); if (html) e.innerHTML = html; return e; };
+const change = (a, b) => (b - a) / a;
+const plural = (n, one, many) => `${fmt(n, 0)} ${n === 1 ? one : many}`;
+
+const runIdMs = id => { const p = String(id || "").split("-")[1]; return /^\d{12,}$/.test(p || "") ? Number(p) : null; };
+const durMs = RUN.state?.testRunDurationMs;
+const succeeded = v("transfers_succeeded", "count") ?? 0;
+const failed = v("transfers_failed", "count") ?? 0;
+const retries = v("transfer_retries", "count") ?? 0;
+const replayed = v("transfers_replayed", "count") ?? 0;
+const iterRate = v("iterations", "rate");
+const baseRate = v("iterations", "rate", B);
+const failedReqs = v("http_req_failed", "passes") ?? 0;
+
+/* Header */
+document.getElementById("title").textContent = META.title;
+const ctx = document.getElementById("context");
+if (META.context) ctx.innerHTML = META.context; else ctx.hidden = true;
+
+const meta = document.getElementById("meta");
+const startedMs = runIdMs(RUN.setup_data?.runId);
+[
+  startedMs && ["Started", new Date(startedMs).toLocaleString("en-GB", { day: "numeric", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit", second: "2-digit", timeZoneName: "short" })],
+  durMs != null && ["Duration", fmt(durMs / 1000, 2) + " s"],
+  v("vus_max", "value") != null && ["Virtual users", fmt(v("vus_max", "value"), 0)],
+  RUN.setup_data?.runId && ["Run id", `<span class="mono">${esc(RUN.setup_data.runId)}</span>`],
+].filter(Boolean).forEach(([k, val]) => meta.append(el("span", {}, `${k} <b>${val}</b>`)));
+
+const thresholds = Object.entries(M).flatMap(([name, m]) => Object.entries(m.thresholds || {}).map(([expr, t]) => ({ name, expr, ok: t.ok })));
+const checkPasses = v("checks", "passes") ?? 0, checkFails = v("checks", "fails") ?? 0;
+const verdict = document.getElementById("verdict");
+if (thresholds.length) {
+  const bad = thresholds.filter(t => !t.ok).length;
+  verdict.append(el("span", { className: "pill " + (bad ? "bad" : "good") }, bad ? `${bad} of ${thresholds.length} thresholds failed` : "All thresholds passed"));
+}
+if (checkPasses + checkFails) {
+  verdict.append(el("span", { className: "pill " + (checkFails ? "bad" : "good") }, `Checks passed: ${checkPasses}/${checkPasses + checkFails}`));
+}
+if (retries > 0) verdict.append(el("span", { className: "pill warn" }, `${plural(retries, "retry", "retries")} needed`));
+if (failed > 0) verdict.append(el("span", { className: "pill bad" }, `${plural(failed, "transfer", "transfers")} failed`));
+
+/* KPIs */
+const vsBase = (a, b, lowerIsBetter) => {
+  if (a == null || b == null || a === 0) return "";
+  const c = change(a, b);
+  const worse = lowerIsBetter ? c > 0.02 : c < -0.02;
+  const better = lowerIsBetter ? c < -0.02 : c > 0.02;
+  return `<span class="${worse ? "bad" : better ? "good" : ""}">${c > 0 ? "+" : ""}${pct(c, 0)}</span> vs ${esc(META.baselineLabel)}`;
+};
+const kpis = [
+  { label: "Transfers completed", value: `${fmt(succeeded, 0)}<small>/ ${fmt(succeeded + failed, 0)}</small>`, sub: `${fmt(failed, 0)} failed after retries` },
+  { label: "Throughput", value: `${fmt(iterRate, 1)}<small>transfers/s</small>`, sub: B ? vsBase(baseRate, iterRate, false) : `over ${fmt((durMs ?? 0) / 1000, 1)} s` },
+  { label: "Retries", value: fmt(retries, 0), sub: `${fmt(succeeded ? retries / succeeded * 100 : 0, 1)} per 100 transfers` + (B ? ` \u00b7 ${fmt(v("transfer_retries", "count", B) ?? 0, 0)} in baseline` : "") },
+  { label: "p95 transfer time", value: `${fmt(v("iteration_duration", "p(95)"), 0)}<small>ms</small>`, sub: B ? `baseline ${ms(v("iteration_duration", "p(95)", B))}` : `median ${ms(v("iteration_duration", "med"))}` },
+];
+const kpiBox = document.getElementById("kpis");
+kpis.forEach(k => kpiBox.append(el("div", { className: "kpi" }, `<span class="label">${k.label}</span><span class="value">${k.value}</span><span class="sub">${k.sub}</span>`)));
+
+/* Latency strips, on one shared scale sized to this run's slowest value */
+const niceStep = raw => { const p = 10 ** Math.floor(Math.log10(raw)); return [1, 2, 2.5, 5, 10].map(m => m * p).find(s => s >= raw); };
+const strips = [
+  { m: "http_req_duration", name: "HTTP request duration", desc: failedReqs ? `all requests, including the ${fmt(failedReqs, 0)} that failed` : "all requests" },
+  { m: "http_req_waiting", name: "Time to first byte", desc: "server processing plus any network delay" },
+  { m: "iteration_duration", name: "Transfer duration", desc: "one transfer end to end, with retries and backoff" },
+].filter(s => M[s.m]);
+const maxV = Math.max(1, ...strips.map(s => M[s.m].values.max));
+const step = niceStep(maxV / 6);
+const SCALE = Math.ceil(maxV / step) * step;
+document.getElementById("lat-p").textContent = `An HTTP request is one call to the API. A transfer is one k6 iteration, which includes any retries and the backoff sleeps between them. All rows share one 0\u2013${fmt(SCALE, 0)} ms scale.`;
+const x = n => Math.min(100, n / SCALE * 100);
+const stripBox = document.getElementById("strips");
+strips.forEach(s => {
+  const st = M[s.m].values;
+  const row = el("div", { className: "strip" });
+  row.append(el("div", { className: "strip-title" }, `<span class="name">${s.name}</span><span class="desc">${s.desc}</span>`));
+  const bar = el("div", { className: "bar", role: "img", ariaLabel: `${s.name}: min ${ms(st.min)}, median ${ms(st.med)}, p95 ${ms(st["p(95)"])}, max ${ms(st.max)}` });
+  bar.innerHTML = `
+    <div class="track"></div>
+    <div class="whisker" style="left:${x(st.min)}%;width:${x(st.max) - x(st.min)}%"></div>
+    <div class="box" style="left:${x(st.med)}%;width:${Math.max(0.5, x(st["p(95)"]) - x(st.med))}%"></div>
+    <div class="tick" style="left:${x(st["p(90)"])}%"></div>
+    <div class="tick avg" style="left:${x(st.avg)}%"></div>
+    <div class="dot min" style="left:${x(st.min)}%"></div>
+    <div class="dot" style="left:${x(st.max)}%"></div>`;
+  row.append(bar);
+  const stats = el("div", { className: "stats" });
+  [["min", st.min], ["med", st.med], ["avg", st.avg], ["p90", st["p(90)"]], ["p95", st["p(95)"]], ["max", st.max]]
+    .forEach(([k, n]) => stats.append(el("div", {}, `<span>${k}</span><span>${fmt(n, 1)}</span>`)));
+  row.append(stats);
+  stripBox.append(row);
+});
+const axis = el("div", { className: "axis", ariaHidden: "true" });
+for (let t = 0; t <= SCALE + 1e-9; t += step) axis.append(el("span", { style: `left:${x(t)}%` }, Math.abs(t - SCALE) < 1e-9 ? `${fmt(t, 0)} ms` : fmt(t, 0)));
+stripBox.append(axis);
+
+/* Comparison with the baseline */
+if (B) {
+  document.getElementById("cmp-section").hidden = false;
+  document.getElementById("cmp-h").textContent = `Compared with ${META.baselineLabel}`;
+  document.getElementById("cmp-p").innerHTML = `Baseline is ${esc(META.baselineFile)}${BASE.setup_data?.runId ? ` (run <span class="mono">${esc(BASE.setup_data.runId)}</span>)` : ""}. Red means worse in this run, green means better.`;
+  document.getElementById("cmp-a").textContent = META.baselineLabel;
+  document.getElementById("cmp-b").textContent = META.label;
+  const rows = [
+    { label: "Run duration", sub: "includes setup and teardown", a: BASE.state?.testRunDurationMs / 1000, b: durMs / 1000, f: n => fmt(n, 2) + " s", lower: true },
+    { label: "Throughput", sub: "completed transfers per second", a: baseRate, b: iterRate, f: n => fmt(n, 1) + "/s", lower: false },
+    { label: "Transfers failed", a: v("transfers_failed", "count", B) ?? 0, b: failed, f: n => fmt(n, 0), lower: true, abs: true },
+    { label: "Retries", a: v("transfer_retries", "count", B) ?? 0, b: retries, f: n => fmt(n, 0), lower: true, abs: true },
+    { label: "Failed HTTP requests", a: v("http_req_failed", "rate", B) ?? 0, b: v("http_req_failed", "rate") ?? 0, f: n => pct(n, 2), lower: true, abs: true },
+    { label: "HTTP requests sent", a: v("http_reqs", "count", B), b: v("http_reqs", "count"), f: n => fmt(n, 0), lower: true },
+    { label: "Transfer time, avg", a: v("iteration_duration", "avg", B), b: v("iteration_duration", "avg"), f: ms, lower: true },
+    { label: "Transfer time, p95", a: v("iteration_duration", "p(95)", B), b: v("iteration_duration", "p(95)"), f: ms, lower: true },
+    { label: "Transfer time, max", a: v("iteration_duration", "max", B), b: v("iteration_duration", "max"), f: ms, lower: true },
+    { label: "HTTP request, avg", a: v("http_req_duration", "avg", B), b: v("http_req_duration", "avg"), f: ms, lower: true },
+    { label: "HTTP request, p95", a: v("http_req_duration", "p(95)", B), b: v("http_req_duration", "p(95)"), f: ms, lower: true },
+    { label: "HTTP request, max", a: v("http_req_duration", "max", B), b: v("http_req_duration", "max"), f: ms, lower: true },
+  ].filter(r => r.a != null && r.b != null && !Number.isNaN(r.a) && !Number.isNaN(r.b));
+  const tbody = document.querySelector("#cmp tbody");
+  rows.forEach(r => {
+    let cls = "flat", txt;
+    const d = r.b - r.a;
+    if (d === 0) txt = "no change";
+    else if (r.a === 0) { txt = "new"; cls = (d > 0) === r.lower ? "worse" : "better"; }
+    else {
+      const c = d / r.a;
+      txt = (c > 0 ? "+" : "") + pct(c, r.abs ? 0 : 1);
+      if (r.abs || Math.abs(c) >= 0.02) cls = (c > 0) === r.lower ? "worse" : "better";
+    }
+    tbody.append(el("tr", {}, `<td>${r.label}${r.sub ? `<span class="sub">${r.sub}</span>` : ""}</td><td>${r.f(r.a)}</td><td>${r.f(r.b)}</td><td class="delta ${cls}">${txt}</td>`));
+  });
+}
+
+/* Requests breakdown */
+const totalReqs = v("http_reqs", "count") ?? 0;
+const accepted = succeeded;
+const other = Math.max(0, totalReqs - accepted - failedReqs);
+const segs = [
+  { k: "Transfer, accepted", n: accepted, c: "var(--accent)" },
+  { k: "Failed request", n: failedReqs, c: "var(--bad)" },
+  { k: "Setup, teardown and other calls", n: other, c: "var(--muted)" },
+];
+const reqs = document.getElementById("reqs");
+reqs.append(el("div", { className: "strip-title" }, `<span class="name">${fmt(totalReqs, 0)} HTTP requests</span><span class="desc">${fmt(v("http_reqs", "rate"), 1)}/s</span>`));
+const stack = el("div", { className: "stack", role: "img", ariaLabel: segs.map(s => `${s.k}: ${s.n}`).join(", ") });
+segs.forEach(s => stack.append(el("span", { style: `width:${totalReqs ? s.n / totalReqs * 100 : 0}%;background:${s.c}` })));
+reqs.append(stack);
+const list = el("div", { className: "rows" });
+segs.forEach(s => list.append(el("div", {}, `<span class="k"><i style="background:${s.c}"></i>${s.k}</span><span class="v">${fmt(s.n, 0)}</span>`)));
+if (replayed) list.append(el("div", {}, `<span class="k muted">Answered as a replay (HTTP 200)</span><span class="v">${fmt(replayed, 0)}</span>`));
+if (v("data_received", "count") != null) list.append(el("div", {}, `<span class="k muted">Data received / sent</span><span class="v">${fmt(v("data_received", "count") / 1024, 0)} / ${fmt((v("data_sent", "count") ?? 0) / 1024, 0)} KiB</span>`));
+reqs.append(list);
+reqs.append(el("p", { className: "muted", style: "font-size:0.8rem" }, `Failed requests count every response k6 treats as an error. A failed attempt that k6 retried counts here too.`));
+if ((v("http_req_connecting", "med") ?? 0) > 0) {
+  reqs.append(el("p", { className: "muted", style: "font-size:0.8rem" }, `Median TCP connect time is above zero, so most requests opened a new connection (for example with <code>--no-connection-reuse</code>).`));
+}
+
+const phaseBody = document.querySelector("#phases tbody");
+[
+  ["http_req_blocked", "Waiting for a connection"],
+  ["http_req_connecting", "TCP connect"],
+  ["http_req_tls_handshaking", "TLS handshake"],
+  ["http_req_sending", "Sending"],
+  ["http_req_waiting", "Waiting for response"],
+  ["http_req_receiving", "Receiving"],
+].filter(([m]) => M[m] && !(m === "http_req_tls_handshaking" && !M[m].values.max)).forEach(([m, label]) => {
+  const st = M[m].values;
+  phaseBody.append(el("tr", {}, `<td>${label}</td><td>${fmt(st.avg, 2)}</td><td>${fmt(st.med, 2)}</td><td>${fmt(st["p(95)"], 2)}</td><td>${fmt(st.max, 2)}</td>`));
+});
+
+/* Checks */
+const checks = document.getElementById("checks");
+thresholds.forEach(t => checks.append(el("li", {}, `<span>Threshold <code>${esc(t.name)}: ${esc(t.expr)}</code></span><span class="status ${t.ok ? "ok" : "fail"}">${t.ok ? "PASS" : "FAIL"}</span>`)));
+const walk = g => {
+  (g.checks || []).forEach(c => {
+    const name = c.name ? c.name[0].toUpperCase() + c.name.slice(1) : "(unnamed check)";
+    checks.append(el("li", {}, `<span>${esc(name)}</span><span class="status ${c.fails === 0 ? "ok" : "fail"}">${c.fails === 0 ? "PASS" : "FAIL"} \u00b7 ${c.passes}/${c.passes + c.fails}</span>`));
+  });
+  (g.groups || []).forEach(walk);
+};
+walk(RUN.root_group || {});
+if (!checks.children.length) checks.append(el("li", { className: "muted" }, "This run has no thresholds or checks."));
+
+/* Notes: computed ones first, then the ones passed in by whoever built the report */
+const notes = [];
+if (succeeded + failed > 0) {
+  notes.push(failed === 0 && checkFails === 0
+    ? { title: "Every transfer finished with the right result", body: `All ${fmt(succeeded, 0)} transfers succeeded and all ${checkPasses} final-state checks passed.` + (retries ? ` ${plural(retries, "attempt was", "attempts were")} rejected first and succeeded on a retry.` : ""), source: "from this report" }
+    : { title: "Some transfers or checks failed", body: `${fmt(failed, 0)} of ${fmt(succeeded + failed, 0)} transfers failed after all retries, and ${checkFails} of ${checkPasses + checkFails} checks failed.`, source: "from this report" });
+}
+if (B) {
+  const baseRetries = v("transfer_retries", "count", B) ?? 0;
+  const extraMs = (v("iteration_duration", "avg") - v("iteration_duration", "avg", B)) * succeeded;
+  const reqP95 = v("http_req_duration", "p(95)"), baseReqP95 = v("http_req_duration", "p(95)", B);
+  if (retries - baseRetries > 0 && extraMs > 0 && reqP95 != null && baseReqP95 != null && Math.abs(change(baseReqP95, reqP95)) < 0.05) {
+    notes.push({
+      title: "The slowdown comes from retries, not slower requests",
+      body: `Request latency matches the baseline (p95 ${ms(reqP95, 2)} vs ${ms(baseReqP95, 2)}). The extra time per transfer adds up to ${fmt(extraMs / 1000, 2)} s, or about ${fmt(extraMs / (retries - baseRetries), 0)} ms per extra retry, which is backoff sleep plus the repeated request.`,
+      source: "computed from both reports",
+    });
+  }
+}
+(META.notes || []).forEach(n => notes.push(n));
+const notesBox = document.getElementById("notes");
+if (!notes.length) document.getElementById("notes-section").hidden = true;
+notes.forEach(n => notesBox.append(el("div", { className: "note" }, `<h3>${n.title}</h3><p>${n.body}</p>${n.source ? `<span class="src">${n.source}</span>` : ""}`)));
+
+document.getElementById("footer").innerHTML =
+  `Source: ${esc(META.runFile)} (k6 summary export)` + (B ? `. Baseline: ${esc(META.baselineFile)}` : "") + "." + (META.footer ? " " + META.footer : "");
+</script>

@@ -26,11 +26,6 @@ public class TransferService {
     /**
      * Naive transfer: read both balances, check, then write back computed values.
      * <p>
-     * Intentionally NO locking (no SELECT ... FOR UPDATE, no version column, no app-level
-     * synchronization). {@code @Transactional} only makes withdraw + deposit + audit row atomic;
-     * under Postgres' default READ COMMITTED isolation concurrent transfers can still read the
-     * same stale balance and overwrite each other (lost update), or overdraw an account.
-     * <p>
      * Idempotency: the transfer row is inserted first with ON CONFLICT DO NOTHING. If a transfer with
      * the same (from, to, idempotency key) already exists, the original is returned and no money moves.
      * A concurrent duplicate blocks on the unique index until the first transaction finishes, so only

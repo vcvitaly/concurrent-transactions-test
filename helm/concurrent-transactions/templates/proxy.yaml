@@ -1,0 +1,45 @@
+{{- if .Values.proxy.enabled }}
+{{- $proxyName := printf "%s-proxy" (include "concurrent-transactions.fullname" . | trunc 57 | trimSuffix "-") }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $proxyName }}
+  labels:
+    {{- include "concurrent-transactions.proxyLabels" . | nindent 4 }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "concurrent-transactions.proxySelectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "concurrent-transactions.proxyLabels" . | nindent 8 }}
+    spec:
+      automountServiceAccountToken: false
+      {{- with .Values.proxy.podSecurityContext }}
+      securityContext:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: proxy
+          image: "{{ .Values.proxy.image.repository }}:{{ .Values.proxy.image.tag }}"
+          imagePullPolicy: {{ .Values.proxy.image.pullPolicy }}
+          args:
+            - "TCP-LISTEN:{{ .Values.proxy.port }},fork,reuseaddr"
+            - "TCP:{{ include "concurrent-transactions.fullname" . }}:{{ .Values.service.port }}"
+          {{- with .Values.proxy.securityContext }}
+          securityContext:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.proxy.port }}
+              protocol: TCP
+          readinessProbe:
+            tcpSocket:
+              port: http
+            periodSeconds: 5
+          resources:
+            {{- toYaml .Values.proxy.resources | nindent 12 }}
+{{- end }}
