@@ -133,6 +133,33 @@ The repo SHALL include a documented smoke test that checks the metrics stack and
 - **WHEN** the smoke test is configured with the default instance name, ports or dashboards directory
 - **THEN** it refuses to start and changes nothing
 
+### Requirement: The stack has an isolated end-to-end test
+The repo SHALL include a documented end-to-end test that deploys the stack to a throwaway local cluster it creates, runs a short load test, and checks that the run's data reaches the committed dashboard and that deploying and tearing down leave Grafana alone. It SHALL NOT use or change the user's kubeconfig, existing clusters or default metrics instance, and SHALL remove everything it created, whether it passes or fails.
+
+#### Scenario: Passing run
+- **WHEN** a developer runs the documented end-to-end test command on a machine with Docker and the documented tools
+- **THEN** it reports each check as passed, exits 0, and leaves no test cluster, containers, volumes or background processes behind
+
+#### Scenario: Run data reaches the dashboard
+- **WHEN** the end-to-end test's load run finishes
+- **THEN** every panel of the committed transfers dashboard returns data from that run, scraped from two service replicas
+
+#### Scenario: Deploy and teardown leave Grafana alone
+- **WHEN** the end-to-end test deploys and tears down the stack
+- **THEN** Grafana stays healthy throughout, and its scratch and repo-folder dashboards are unchanged
+
+#### Scenario: User's cluster setup untouched
+- **WHEN** the end-to-end test runs, whether it passes or fails
+- **THEN** the user's kubeconfig file and current context are unchanged afterwards, and no cluster it didn't create is modified
+
+#### Scenario: Test cluster name already in use
+- **WHEN** a cluster with the end-to-end test's cluster name already exists
+- **THEN** the test refuses to start and changes nothing
+
+#### Scenario: Failing check
+- **WHEN** a check fails
+- **THEN** the test reports which check failed, exits non-zero, and still removes its cluster, test instance and background processes
+
 ### Requirement: Grafana usage is documented
 The README SHALL document Grafana's URL, the repo folder and how scratch dashboards differ from it, the export command, and that unexported UI edits to a repo-folder dashboard are overwritten when its committed file changes, so dashboards must be exported before pulling or switching branches.
 

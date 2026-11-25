@@ -1,5 +1,18 @@
 # Spec Delta
 
+## ADDED Requirements
+
+### Requirement: Stack deploys to a kind cluster
+When told the name of the kind cluster it targets, `./deploy.sh` SHALL make the images it builds locally available to that cluster before installing anything that uses them. Without that setting, its behaviour SHALL be unchanged and it SHALL NOT require kind. The README SHALL document the setting.
+
+#### Scenario: Deploy to kind
+- **WHEN** `./deploy.sh` runs against a kind cluster with that cluster's name set
+- **THEN** the service, speedbump and collector become ready, and the collector scrapes both service replicas
+
+#### Scenario: Setting unset
+- **WHEN** `./deploy.sh` runs without the kind cluster setting
+- **THEN** it doesn't call kind and behaves as before
+
 ## MODIFIED Requirements
 
 ### Requirement: History is independent of the cluster

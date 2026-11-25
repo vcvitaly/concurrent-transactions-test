@@ -64,12 +64,34 @@ Synthetic data comes from an `awk` generator. It writes about an hour of Prometh
 
 Steps that are UI actions in normal use run through Grafana's API in the test: saving (`POST /api/dashboards/db`), moving a dashboard to another folder (`folderUid`) and deleting one.
 
-The script is run by hand. There is no CI, and it needs Docker. Two rules are absolute: the test never binds anything beyond loopback, and it never needs a pseudo-terminal. So it doesn't cover:
-- what needs a cluster: a real k6 run, and `deploy.sh` leaving the stack alone;
+The script is run by hand. There is no CI, and it needs Docker. Setting up the test instance, the guards, the cleanup, the generator and the assertion helpers live in `metrics/test/lib.sh`, which `e2e.sh` (below) shares. Two rules are absolute for both scripts: they never bind anything beyond loopback, and they never need a pseudo-terminal. So the smoke test doesn't cover:
+- what needs a cluster: a real k6 run, and `deploy.sh` leaving the stack alone. `e2e.sh` covers both;
 - the non-loopback exposure warning (checking it would mean binding to all interfaces);
 - answering the interactive reset prompt (checking it would need a pseudo-terminal). This is existing code that the change doesn't touch. The refusal checked through the non-interactive path covers what matters.
 - *Alternative: a compose override file.* Rejected: Compose adds override ports to the list instead of replacing them, and `metrics.sh` would still target the default ports and volumes.
 - *Alternative: a throwaway script.* Rejected: the hooks would be left with nothing using them, and later changes, such as a Grafana upgrade, would go back to manual checks against real data.
+
+### End-to-end test on a throwaway kind cluster
+`metrics/test/e2e.sh` checks what the smoke test can't: data from a real deploy and k6 run reaching the dashboard, and `deploy.sh` leaving the metrics stack alone. It doesn't depend on Docker Desktop's Kubernetes or on the user's kubeconfig:
+1. Start a test metrics instance, as the smoke test does, with its own instance name and ports.
+2. `kind create cluster --name ct-e2e --kubeconfig <tmp>/kubeconfig`. Every later `kubectl`, `helm` and `deploy.sh` call runs with `KUBECONFIG` set to that file.
+3. Run `./deploy.sh` with `DEPLOY_KIND_CLUSTER=ct-e2e` and `METRICS_REMOTE_WRITE_URL` pointing at the test store (see the remote-write decision below).
+4. Start `kubectl port-forward pod/speedbump` on a test port (18081) in the background, then run a short k6 load: `TRANSFERS_PER_SENDER` set small, a summary file in the temporary directory, and remote write to the test store.
+5. Assert that each "Transfers" panel query returns data inside the run's time window, coming from real scrapes (two `instance` values on `up`, and `transfers_total{outcome="created"}` increased).
+6. Save a scratch dashboard, run `./deploy.sh --teardown`, and assert that Grafana stayed healthy throughout (polled in the background) and that both the scratch and "Repo" dashboards are unchanged.
+
+A `trap` stops the port-forward, runs `kind delete cluster --name ct-e2e`, and cleans up the test instance. Guards: refuse to start if a kind cluster named `ct-e2e` already exists (never delete one the script didn't create), and the same metrics-instance guard as the smoke test. The script never reads or writes the user's kubeconfig; it checks the file's checksum before and after, and confirms the user's current context is unchanged. It takes several minutes, so it's a separate, opt-in script, and `smoke.sh` stays fast.
+- *Alternative: Testcontainers with k3s.* Rejected: it would need a JVM test, run through Gradle, to drive bash scripts, and loading images into k3s means piping `docker save` into `ctr` by hand. kind is shell-native and already installed.
+- *Alternative: Docker Desktop's Kubernetes.* Rejected: it's tied to one machine's setup, and it shares the user's real cluster and kubeconfig.
+- *Alternative: folding it into `smoke.sh`.* Rejected: it would make every smoke run take minutes.
+
+### `deploy.sh` loads local images into a kind cluster on request
+`deploy.sh` builds `concurrent-transactions-test:build-<hash>` and `speedbump:v1.1.0` locally and deploys them with `IfNotPresent`. That works on Docker Desktop's Kubernetes only because it shares Docker's image store. When `DEPLOY_KIND_CLUSTER=<name>` is set, `deploy.sh` runs `kind load docker-image --name <name>` for both images after building them, and requires `kind` only in that case. When it's unset, nothing changes. This is documented as a supported way to deploy to kind, not only a test hook.
+- *Alternative: detecting kind from a `kind-` context name.* Rejected: it's a guess, and the variable is explicit.
+- *Alternative: a local registry.* Rejected: it's more moving parts for the same result.
+
+### Remote write from kind pods to the test store
+The chart's default `host.docker.internal:8428` is the *real* store's port, so `e2e.sh` always overrides it. The preferred route is to attach the test store's container to kind's `kind` Docker network and use `http://<test-store-container>:8428/api/v1/write`. That works on any Docker engine if pods can resolve container names through CoreDNS and the node's Docker DNS. The fallback is `http://host.docker.internal:<test store port>/api/v1/write`, which works on Docker Desktop. The first e2e task is a spike that proves one of these; the design records the outcome. Either way, the URL never points at port 8428 on the host, and `e2e.sh` asserts that.
 
 ### Version pinning
 The Grafana image is pinned to an exact version, like the VictoriaMetrics image. The tag is chosen when the change is implemented.
@@ -84,6 +106,10 @@ The Grafana image is pinned to an exact version, like the VictoriaMetrics image.
 - **[The smoke test destroys real data if it targets the default instance]**, because it runs `reset --grafana --yes`. → The guard refuses to run unless every instance setting differs from the default. Cleanup removes volumes by their test names only, never with `down --volumes` against a project name it didn't create. The test also checks that the default `victoriametrics-data` volume still exists, with the same creation time as before the run.
 - **[The exposure warning's Grafana wording isn't checked automatically]** → Accepted, so the test never binds beyond loopback. It's a one-line message next to the existing store warning, and the change is reviewed in the diff.
 - **[The smoke test breaks when Grafana's API responses change]** → It's expected and caught at upgrade time, which is when it's useful. Assertions check only the fields they need.
+- **[The e2e test sends data to, or tears down, something real]** → It never reads or writes the user's kubeconfig (checksum checked before and after). It uses only a cluster it created, and refuses to start if `ct-e2e` already exists. The remote-write URL is asserted not to target host port 8428. The metrics-instance guard is shared with the smoke test.
+- **[Pods can't reach the test store]** → A spike settles this before anything else is built, with a documented fallback. A stuck run fails on a timeout with the collector's remote-write counters printed, instead of hanging.
+- **[The e2e test is slow and needs Docker resources]** (several minutes; a kind node plus the metrics stack) → It's opt-in and separate from `smoke.sh`, uses a short k6 load, and the README states the expected run time.
+- **[Port-forward or k6 processes outlive a failed run]** → The `trap` kills the background PIDs it started before deleting the cluster.
 
 ## Migration Plan
 
