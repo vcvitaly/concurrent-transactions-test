@@ -1,0 +1,71 @@
+image:
+  repository: prom/prometheus
+  # Defaults to the chart appVersion.
+  tag: ""
+  pullPolicy: IfNotPresent
+
+imagePullSecrets: []
+
+nameOverride: ""
+fullnameOverride: ""
+
+scrape:
+  # Required: DNS name of the app's headless metrics Service, for example
+  # app-concurrent-transactions-metrics. Each A record becomes a scrape target.
+  dnsName: ""
+  port: 8090
+  interval: 5s
+  path: /actuator/prometheus
+
+remoteWrite:
+  # The long-term store as seen from inside the cluster. Empty disables forwarding.
+  url: http://host.docker.internal:8428/api/v1/write
+
+# Local data only covers the live view and the remote-write buffer, so it is small and disposable.
+retention:
+  time: 6h
+  size: 512MB
+storage:
+  sizeLimit: 1Gi
+
+service:
+  type: ClusterIP
+  port: 9090
+
+# Above the remote-write flush deadline (1m), so Prometheus can flush its queues on shutdown.
+terminationGracePeriodSeconds: 90
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 256Mi
+  limits:
+    memory: 1Gi
+
+# 65534 is nobody, which the image runs as.
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 65534
+  runAsGroup: 65534
+  fsGroup: 65534
+
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop:
+      - ALL
+
+probes:
+  readiness:
+    periodSeconds: 5
+    timeoutSeconds: 3
+    failureThreshold: 3
+  liveness:
+    periodSeconds: 10
+    timeoutSeconds: 3
+    failureThreshold: 6
+
+nodeSelector: {}
+tolerations: []
+affinity: {}

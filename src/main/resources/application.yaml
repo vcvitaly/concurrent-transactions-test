@@ -5,3 +5,41 @@ spring:
     url: jdbc:postgresql://localhost:5432/concurrent_transactions
     username: postgres
     password: postgres
+
+server:
+  # Readiness turns to refusing traffic, then in-flight requests finish before the app stops.
+  shutdown: graceful
+
+management:
+  # Metrics and detailed health live on their own port, which the Service and the proxies don't expose.
+  server:
+    port: 8090
+  endpoints:
+    web:
+      exposure:
+        include: health,prometheus
+  endpoint:
+    health:
+      show-details: always
+      show-components: always
+      probes:
+        enabled: true
+        # Also serves /livez and /readyz on the API port, so the probes exercise the API listener.
+        add-additional-paths: true
+      group:
+        # Neither group checks the database: a Postgres outage should show up as 500s, not as
+        # restart loops or replicas leaving the Service.
+        liveness:
+          include: livenessState
+          show-details: never
+          show-components: never
+        readiness:
+          include: readinessState
+          show-details: never
+          show-components: never
+  metrics:
+    distribution:
+      # Buckets only for the two transfer timers; everything else keeps its default summary.
+      percentiles-histogram:
+        transfer.duration: true
+        transfer.lock.query: true

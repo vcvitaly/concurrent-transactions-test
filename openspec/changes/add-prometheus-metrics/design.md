@@ -61,9 +61,9 @@ The app chart gains a headless Service `<fullname>-metrics` (`clusterIP: None`, 
 
 ### D5. VictoriaMetrics in Docker, managed by `metrics.sh`
 - **`metrics/compose.yaml`:** one `victoriametrics` service with a pinned `victoriametrics/victoria-metrics` tag, port 8428, a named volume `victoriametrics-data`, and `-retentionPeriod` (for example `6` months). VictoriaMetrics accepts Prometheus remote write natively at `/api/v1/write`, and serves vmui at `/vmui` and a Prometheus-compatible query API.
-- **Port binding:** `${METRICS_BIND_ADDRESS:-127.0.0.1}:8428:8428`, so the unauthenticated store is loopback-only by default. The reachability check used an all-interfaces binding. Whether pods can reach a `127.0.0.1` binding through `host.docker.internal` on Docker Desktop is not yet checked. Task 5.2 checks it with a real remote write and a read-back.
-  - If the loopback binding works, all-interfaces binding is never needed. The variable stays as an explicit option.
-  - If it doesn't work, the default **stays** `127.0.0.1`, and the README documents `METRICS_BIND_ADDRESS=0.0.0.0` as the opt-in that makes forwarding from the cluster work. `metrics.sh up` warns whenever the bind address isn't loopback. A routine `./metrics.sh up` never exposes the store.
+- **Port binding:** `${METRICS_BIND_ADDRESS:-127.0.0.1}:8428:8428`, so the unauthenticated store is loopback-only by default. The reachability check used an all-interfaces binding. Task 5.2 checked whether pods reach a `127.0.0.1` binding through `host.docker.internal` on Docker Desktop.
+  - **Result (2026-11-25, VictoriaMetrics v1.157.0, Docker Desktop kind cluster):** it works. A throwaway `curlimages/curl` pod POSTed a sample to `http://host.docker.internal:8428/api/v1/import/prometheus` with the store bound to `127.0.0.1:8428`, and the sample was read back from the host through `/api/v1/export`. Docker Desktop forwards `host.docker.internal` traffic to the host's loopback, so the all-interfaces binding is never needed. `METRICS_BIND_ADDRESS` stays as an explicit option.
+  - `metrics.sh up` warns whenever the bind address isn't loopback. A routine `./metrics.sh up` never exposes the store.
 - **`metrics.sh` commands,** written in the strict-bash style of `deploy.sh`:
   - `up`: `docker compose up -d`, then wait for `/health`
   - `down`: stop, keeping the volume

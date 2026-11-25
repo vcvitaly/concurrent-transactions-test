@@ -5,6 +5,7 @@ import io.github.vcvitaly.concurrenttransactionstest.account.AccountService;
 import io.github.vcvitaly.concurrenttransactionstest.account.AccountDao;
 import io.github.vcvitaly.concurrenttransactionstest.account.AccountUtil;
 import io.github.vcvitaly.concurrenttransactionstest.common.NotFoundException;
+import io.micrometer.core.instrument.Timer;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -22,6 +23,7 @@ public class TransferService {
 
     private final AccountDao accountDao;
     private final TransferDao transferDao;
+    private final TransferMetrics transferMetrics;
 
     /**
      * Naive transfer: read both balances, check, then write back computed values.
@@ -95,7 +97,15 @@ public class TransferService {
         if (accountIdPair.size() > 2) {
             throw new IllegalArgumentException("Cannot select more than 2 accounts for transfer, got " + accountIdPair.size());
         }
-        SequencedMap<Long, Account> accountById = accountDao.findByIdsForUpdate(accountIdPair).stream()
+        // Times the whole query, including any wait for row locks; failures are timed too.
+        Timer.Sample lockQuery = transferMetrics.start();
+        Set<Account> locked;
+        try {
+            locked = accountDao.findByIdsForUpdate(accountIdPair);
+        } finally {
+            lockQuery.stop(transferMetrics.lockQueryTimer());
+        }
+        SequencedMap<Long, Account> accountById = locked.stream()
                 .collect(Collectors.toMap(
                         Account::id,
                         Function.identity(),

@@ -1,0 +1,22 @@
+# Long-term metrics store, outside the cluster. Managed by ../metrics.sh, never by deploy.sh.
+name: concurrent-transactions-metrics
+
+services:
+  victoriametrics:
+    image: victoriametrics/victoria-metrics:v1.157.0
+    container_name: concurrent-transactions-victoriametrics
+    command:
+      - -storageDataPath=/storage
+      # Months when there is no suffix (h, d, w and y are also accepted).
+      - -retentionPeriod=${METRICS_RETENTION:-6}
+      - -httpListenAddr=:8428
+    ports:
+      # Loopback only by default: the API has no authentication. See metrics.sh before changing it.
+      - "${METRICS_BIND_ADDRESS:-127.0.0.1}:8428:8428"
+    volumes:
+      - victoriametrics-data:/storage
+    restart: unless-stopped
+
+volumes:
+  victoriametrics-data:
+    name: victoriametrics-data

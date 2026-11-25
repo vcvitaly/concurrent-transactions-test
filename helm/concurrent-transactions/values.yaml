@@ -72,24 +72,33 @@ securityContext:
     drop:
       - ALL
 
-# The app has no HTTP health endpoint, so probes check that the port accepts connections.
+# Probes use the bare /readyz and /livez statuses on the API port, so they fail when the API
+# listener isn't serving. Neither checks the database.
 startupProbe:
-  tcpSocket:
+  httpGet:
+    path: /readyz
     port: http
   periodSeconds: 5
   failureThreshold: 30
 
 readinessProbe:
-  tcpSocket:
+  httpGet:
+    path: /readyz
     port: http
   periodSeconds: 5
   failureThreshold: 3
 
 livenessProbe:
-  tcpSocket:
+  httpGet:
+    path: /livez
     port: http
   periodSeconds: 10
   failureThreshold: 3
+
+# Headless Service that lists every replica's management port, for Prometheus DNS discovery.
+metrics:
+  enabled: true
+  port: 8090
 
 extraEnv: []
 

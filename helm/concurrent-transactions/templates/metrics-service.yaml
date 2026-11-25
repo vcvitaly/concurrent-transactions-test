@@ -1,0 +1,20 @@
+{{- if .Values.metrics.enabled }}
+# Headless, so DNS returns one A record per replica and Prometheus scrapes each one.
+# Not-ready replicas are listed too: their metrics often explain why they are not ready.
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "concurrent-transactions.fullname" . | trunc 55 | trimSuffix "-" }}-metrics
+  labels:
+    {{- include "concurrent-transactions.labels" . | nindent 4 }}
+spec:
+  clusterIP: None
+  publishNotReadyAddresses: true
+  selector:
+    {{- include "concurrent-transactions.selectorLabels" . | nindent 4 }}
+  ports:
+    - name: management
+      port: {{ .Values.metrics.port }}
+      targetPort: management
+      protocol: TCP
+{{- end }}
