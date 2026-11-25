@@ -114,6 +114,25 @@ The repo SHALL include a committed dashboard with panels for transfer outcomes, 
 - **WHEN** a load test has run with the store and Grafana running, and the dashboard's time range covers the run
 - **THEN** each of those panels shows data for the run
 
+### Requirement: The metrics stack has an isolated smoke test
+The repo SHALL include a documented smoke test that checks the metrics stack and Grafana against a separate instance seeded with synthetic data, with no manual steps. It SHALL refuse to run against the default instance, SHALL NOT change the default instance's data, and SHALL remove its own instance and data when it finishes, whether it passes or fails.
+
+#### Scenario: Passing run
+- **WHEN** a developer runs the documented smoke test command on a machine with Docker
+- **THEN** it reports each check as passed, exits 0, and leaves no test containers or volumes behind
+
+#### Scenario: Default instance untouched
+- **WHEN** the smoke test runs while the default store holds data, whether or not the default stack is running
+- **THEN** the default store's data and Grafana's data are unchanged afterwards
+
+#### Scenario: Failing check
+- **WHEN** a check fails
+- **THEN** the test reports which check failed with the expected and actual values, exits non-zero, and still removes its test instance and data
+
+#### Scenario: Pointed at defaults
+- **WHEN** the smoke test is configured with the default instance name, ports or dashboards directory
+- **THEN** it refuses to start and changes nothing
+
 ### Requirement: Grafana usage is documented
 The README SHALL document Grafana's URL, the repo folder and how scratch dashboards differ from it, the export command, and that unexported UI edits to a repo-folder dashboard are overwritten when its committed file changes, so dashboards must be exported before pulling or switching branches.
 

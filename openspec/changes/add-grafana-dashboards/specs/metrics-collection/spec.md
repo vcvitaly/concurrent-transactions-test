@@ -21,6 +21,10 @@ The store's data SHALL survive cluster teardown and redeploy, and restarts of th
 - **WHEN** the reset command runs without the no-confirmation flag
 - **THEN** it asks for confirmation before deleting any data, naming what it will delete
 
+#### Scenario: Reset outside a terminal without confirmation
+- **WHEN** the reset command runs without the no-confirmation flag and not in a terminal
+- **THEN** it exits non-zero, deletes nothing, and names the data it would have deleted
+
 #### Scenario: Reset deletes only the store's data
 - **WHEN** the reset command runs without any option to include other data, and is confirmed
 - **THEN** the store's data is deleted, any other data in the metrics stack is kept, and the command says which data it deleted and which it kept
