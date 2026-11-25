@@ -32,6 +32,9 @@ The datasource is provisioned from `metrics/grafana/provisioning/datasources/` w
 
 ### Hybrid dashboard storage, with the "Repo" folder as the boundary
 A file provider in `metrics/grafana/provisioning/dashboards/` loads `metrics/grafana/dashboards/*.json`, mounted read-only, into a folder named "Repo". It sets `allowUiUpdates: true` and a short `updateIntervalSeconds`. UI saves go to the database in `grafana-data`. Dashboards in any other folder are scratch work and never exported.
+
+For a "Repo" dashboard, the committed file is the durable copy and a UI edit is a working copy until it's exported. That's how Grafana 13.3 behaves, found while implementing: a UI save unlinks the dashboard from its file, the running provider leaves it alone, but on the next start the provider loads the file again and the unexported edit is gone. A changed file replaces it too. Grafana also refuses to delete a dashboard while it's still linked to its file; after a UI save unlinks it, it can be deleted. The rule for users is "export before you pull, switch branches or stop the stack".
+- *Alternative: make `metrics.sh down` export automatically.* Rejected: it would write files in the repo without being asked, and `reset` and Docker restarts would still bypass it.
 - *Alternative: the UI database only.* No versioning, and dashboards are lost with the volume.
 - *Alternative: files only, with UI edits disabled.* This makes iterating painful. Both alternatives were rejected in favour of the hybrid.
 
@@ -93,12 +96,19 @@ A `trap` stops the port-forward, runs `kind delete cluster --name ct-e2e`, and c
 ### Remote write from kind pods to the test store
 The chart's default `host.docker.internal:8428` is the *real* store's port, so `e2e.sh` always overrides it. The preferred route is to attach the test store's container to kind's `kind` Docker network and use `http://<test-store-container>:8428/api/v1/write`. That works on any Docker engine if pods can resolve container names through CoreDNS and the node's Docker DNS. The fallback is `http://host.docker.internal:<test store port>/api/v1/write`, which works on Docker Desktop. The first e2e task is a spike that proves one of these; the design records the outcome. Either way, the URL never points at port 8428 on the host, and `e2e.sh` asserts that.
 
+**Spike outcome (2026-11-25): the preferred route works, and `e2e.sh` uses it.** Setup: Docker Desktop 29.9.3 (linux/arm64), kind v0.33.0 with node `v1.37.0`, a throwaway cluster `ct-spike` with its own kubeconfig, and a spike store `ct-spike-victoriametrics` on host port 28428, attached with `docker network connect kind ct-spike-victoriametrics`. Evidence:
+- From a one-off `curlimages/curl` pod (cluster DNS `10.96.0.10`), `curl http://ct-spike-victoriametrics:8428/health` returned `OK`. The fallback, `http://host.docker.internal:28428/health`, also returned `OK`.
+- A one-off `prom/prometheus:v3.16.0` pod scraping itself (`job="spike"`) with `remote_write` to `http://ct-spike-victoriametrics:8428/api/v1/write` delivered its samples: the spike store returned `up{job="spike", instance="localhost:9090"} 1` 36s after the pod was created (including its startup).
+- The spike cluster, store, volumes and kubeconfig were deleted afterwards; the user's kubeconfig checksum was unchanged.
+
+So `e2e.sh` attaches the test store's container to the `kind` network and sets `METRICS_REMOTE_WRITE_URL=http://<test store container>:8428/api/v1/write`. Port 8428 there is the container port on the `kind` network, not a host port, so the real store on the host is never targeted.
+
 ### Version pinning
 The Grafana image is pinned to an exact version, like the VictoriaMetrics image. The tag is chosen when the change is implemented.
 
 ## Risks / Trade-offs
 
-- **[Unexported UI edits to a "Repo" dashboard are overwritten when its file changes]**, for example after `git pull` or a branch switch. → The README documents "export before you pull". `export-dashboards` is cheap to run. As a further option, the command could warn when a dashboard's database version is newer than its file; that is a nice-to-have, not part of the spec.
+- **[Unexported UI edits to a "Repo" dashboard are lost when its file changes or Grafana restarts]**, for example after `git pull`, a branch switch or `./metrics.sh down` and `up`. → The README documents "export before you pull, switch branches or stop the stack". `export-dashboards` is cheap to run. As a further option, the command could warn when a dashboard's database version is newer than its file; that is a nice-to-have, not part of the spec.
 - **[Anonymous admin becomes reachable on the network if the bind address is changed]** → The existing warning on `up` is extended to Grafana. The default stays loopback.
 - **[The `reset` behaviour change surprises someone who expects a full wipe]** → `reset` prints which volumes it deleted and which it kept. The README documents `--grafana`.
 - **[Grafana's state outside "Repo" (scratch dashboards, starred Explore history, preferences) is only as durable as the volume]** → This is by design. It survives `down`, `up` and a plain `reset`, but not `reset --grafana`.

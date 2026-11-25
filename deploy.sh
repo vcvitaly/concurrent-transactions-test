@@ -10,6 +10,9 @@
 #
 # Set NAMESPACE to override the target namespace. Set METRICS_REMOTE_WRITE_URL to forward metrics
 # somewhere other than the local store (see metrics.sh). This script never touches that store.
+# Set DEPLOY_KIND_CLUSTER to the name of the kind cluster the current context points at, to load the
+# locally built images into it (kind is required only then). Docker Desktop's Kubernetes doesn't
+# need it, because it shares Docker's image store.
 
 set -euo pipefail
 
@@ -35,6 +38,7 @@ SPEEDBUMP_POD="speedbump"
 SPEEDBUMP_IMAGE="speedbump:v1.1.0"
 SPEEDBUMP_LATENCY="20ms"
 SPEEDBUMP_PORT="8081"
+KIND_CLUSTER="${DEPLOY_KIND_CLUSTER:-}"
 
 usage() {
   echo "Usage: $0 [--teardown]"
@@ -57,6 +61,14 @@ current_context() {
     exit 1
   fi
   echo "$context"
+}
+
+# Makes a locally built image available to the kind cluster, if one is set. Its nodes don't share
+# Docker's image store, and the charts use IfNotPresent.
+load_into_kind() {
+  if [ -n "$KIND_CLUSTER" ]; then
+    kind load docker-image --name "$KIND_CLUSTER" "$1" >&2
+  fi
 }
 
 # Tags the image by content, so changed code always rolls out and unchanged code does not.
@@ -88,6 +100,7 @@ EOF
 # Recreated on every deploy, because a pod's image and arguments cannot be updated in place.
 start_speedbump() {
   build_speedbump_image
+  load_into_kind "$SPEEDBUMP_IMAGE"
 
   kubectl -n "$NAMESPACE" expose deployment "$PROXY_DEPLOYMENT" \
     --name "$PROXY_SERVICE" \
@@ -209,6 +222,7 @@ deploy() {
 
   build_image
   echo "Built image $IMAGE_REPOSITORY:$IMAGE_TAG"
+  load_into_kind "$IMAGE_REPOSITORY:$IMAGE_TAG"
 
   helm upgrade --install "$POSTGRES_RELEASE" helm/postgres \
     --namespace "$NAMESPACE" \
@@ -274,6 +288,9 @@ fi
 require_tools helm kubectl
 if [ "$action" = deploy ]; then
   require_tools docker
+  if [ -n "$KIND_CLUSTER" ]; then
+    require_tools kind
+  fi
 fi
 context="$(current_context)"
 "$action" "$context"

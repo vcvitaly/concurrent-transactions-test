@@ -48,11 +48,15 @@ Dashboard definitions committed in the repo SHALL be loaded into a dedicated rep
 - **THEN** Grafana shows the changed dashboard within a minute, without a restart
 
 ### Requirement: Dashboards can be edited and saved in the UI
-Dashboards in any folder, including the repo folder, SHALL be editable and savable in the Grafana UI. Dashboards outside the repo folder SHALL be kept only in Grafana's data and SHALL never be written to the repo.
+Dashboards in any folder, including the repo folder, SHALL be editable and savable in the Grafana UI. Dashboards outside the repo folder SHALL be kept only in Grafana's data and SHALL never be written to the repo. An unexported UI edit to a repo-folder dashboard SHALL last while Grafana keeps running and its file is unchanged; its committed file is the copy that survives a restart, so the edit is kept by exporting it.
 
 #### Scenario: Edit a committed dashboard
 - **WHEN** a developer edits a dashboard in the repo folder and saves it
-- **THEN** the save succeeds, and the edit is still there after Grafana restarts, as long as its file hasn't changed
+- **THEN** the save succeeds, and the edit is served while Grafana keeps running and its file is unchanged
+
+#### Scenario: Restart before export
+- **WHEN** a repo-folder dashboard has an unexported UI edit and Grafana is restarted with the documented commands
+- **THEN** the dashboard is served from its committed file, without the edit
 
 #### Scenario: Scratch dashboard
 - **WHEN** a developer creates a dashboard outside the repo folder and exports dashboards
@@ -97,7 +101,7 @@ Grafana's data SHALL survive cluster teardown and redeploy, restarts of the stac
 
 #### Scenario: Stack restart
 - **WHEN** the stack is stopped and started again with the documented commands
-- **THEN** dashboards saved only in the UI are still there
+- **THEN** dashboards saved only in the UI, outside the repo folder, are still there
 
 #### Scenario: Metrics reset keeps dashboards
 - **WHEN** the reset command runs without the Grafana option
@@ -161,7 +165,7 @@ The repo SHALL include a documented end-to-end test that deploys the stack to a 
 - **THEN** the test reports which check failed, exits non-zero, and still removes its cluster, test instance and background processes
 
 ### Requirement: Grafana usage is documented
-The README SHALL document Grafana's URL, the repo folder and how scratch dashboards differ from it, the export command, and that unexported UI edits to a repo-folder dashboard are overwritten when its committed file changes, so dashboards must be exported before pulling or switching branches.
+The README SHALL document Grafana's URL, the repo folder and how scratch dashboards differ from it, the export command, and that unexported UI edits to a repo-folder dashboard are lost when its committed file changes or Grafana restarts, so dashboards must be exported before pulling, switching branches or stopping the stack.
 
 #### Scenario: Following the docs
 - **WHEN** a developer follows the README to save a query as a panel and export it

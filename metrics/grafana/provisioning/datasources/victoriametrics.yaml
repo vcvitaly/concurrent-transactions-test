@@ -1,0 +1,14 @@
+# The long-term store, reached over the compose network. Committed dashboards refer to it by this
+# uid, so keep it fixed. The Prometheus type works because VictoriaMetrics evaluates MetricsQL itself.
+apiVersion: 1
+
+datasources:
+  - name: VictoriaMetrics
+    uid: victoriametrics
+    type: prometheus
+    access: proxy
+    url: http://victoriametrics:8428
+    isDefault: true
+    editable: false
+    jsonData:
+      timeInterval: 5s

@@ -8,7 +8,7 @@ The long-term store keeps load-test history across cluster teardowns, but its on
 
 - Add Grafana as a second service in the metrics stack (`metrics/compose.yaml`), managed only by `metrics.sh`. Like the store, it lives outside the cluster and `deploy.sh` never touches it.
 - Provision a VictoriaMetrics datasource with a fixed uid, so committed dashboards keep resolving it.
-- Load dashboards from JSON files in the repo into a dedicated "Repo" folder, while still allowing them to be edited and saved in the UI. Dashboards in other folders are scratch work and live only in Grafana's volume.
+- Load dashboards from JSON files in the repo into a dedicated "Repo" folder, while still allowing them to be edited and saved in the UI. The file is the durable copy: a UI edit to a "Repo" dashboard lasts until Grafana restarts or the file changes, unless it's exported. Dashboards in other folders are scratch work and live only in Grafana's volume.
 - Add `./metrics.sh export-dashboards`, which writes every dashboard in the "Repo" folder back to its JSON file.
 - Bind Grafana to loopback by default with anonymous access, following the same bind-address rule and warning as the store.
 - Make `./metrics.sh up` and `status` cover Grafana's health and print its URL.
@@ -18,7 +18,7 @@ The long-term store keeps load-test history across cluster teardowns, but its on
 - When `reset` runs outside a terminal without `--yes`, its refusal now names the volumes it would have deleted.
 - Add a committed end-to-end test, `metrics/test/e2e.sh`. It creates a throwaway kind cluster, deploys the stack, runs a short k6 load, checks that the run's data reaches the committed dashboard and that deploy and teardown leave Grafana alone, then removes everything. It never uses the user's kubeconfig, existing clusters or default metrics instance, so no step in this change needs Docker Desktop's Kubernetes or manual checking.
 - `deploy.sh` gains a supported, documented option to deploy to a kind cluster: when a kind cluster name is set, it loads its locally built images into that cluster. When it's unset, nothing changes.
-- Document Grafana, the export workflow and the "export before pull" rule in the README.
+- Document Grafana, the export workflow and the "export before you pull, switch branches or stop the stack" rule in the README.
 
 ## Capabilities
 

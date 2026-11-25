@@ -1,10 +1,15 @@
-# Long-term metrics store, outside the cluster. Managed by ../metrics.sh, never by deploy.sh.
-name: concurrent-transactions-metrics
+# Long-term metrics store and Grafana, outside the cluster. Managed by ../metrics.sh, never by
+# deploy.sh.
+#
+# Unset, every name, port and path below is the default instance's. METRICS_INSTANCE, the
+# METRICS_*_PORT settings, METRICS_DASHBOARDS_DIR and METRICS_GRAFANA_IMAGE exist so the tests in
+# test/ can run a separate instance; see metrics.sh.
+name: ${METRICS_INSTANCE:-concurrent-transactions-metrics}
 
 services:
   victoriametrics:
     image: victoriametrics/victoria-metrics:v1.157.0
-    container_name: concurrent-transactions-victoriametrics
+    container_name: ${METRICS_INSTANCE:-concurrent-transactions}-victoriametrics
     command:
       - -storageDataPath=/storage
       # Months when there is no suffix (h, d, w and y are also accepted).
@@ -12,11 +17,34 @@ services:
       - -httpListenAddr=:8428
     ports:
       # Loopback only by default: the API has no authentication. See metrics.sh before changing it.
-      - "${METRICS_BIND_ADDRESS:-127.0.0.1}:8428:8428"
+      - "${METRICS_BIND_ADDRESS:-127.0.0.1}:${METRICS_STORE_PORT:-8428}:8428"
     volumes:
       - victoriametrics-data:/storage
     restart: unless-stopped
 
+  grafana:
+    image: ${METRICS_GRAFANA_IMAGE:-grafana/grafana:13.3.2}
+    container_name: ${METRICS_INSTANCE:-concurrent-transactions}-grafana
+    environment:
+      # Anyone who can reach the port is an admin, with no login. Safe only on loopback; see
+      # metrics.sh before changing METRICS_BIND_ADDRESS.
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Admin
+      GF_AUTH_DISABLE_LOGIN_FORM: "true"
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    ports:
+      - "${METRICS_BIND_ADDRESS:-127.0.0.1}:${METRICS_GRAFANA_PORT:-3000}:3000"
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      # Loaded into the "Repo" folder; see grafana/provisioning/dashboards/repo.yaml.
+      - ${METRICS_DASHBOARDS_DIR:-./grafana/dashboards}:/etc/grafana/repo-dashboards:ro
+    depends_on:
+      - victoriametrics
+    restart: unless-stopped
+
 volumes:
   victoriametrics-data:
-    name: victoriametrics-data
+    name: ${METRICS_INSTANCE:+${METRICS_INSTANCE}-}victoriametrics-data
+  grafana-data:
+    name: ${METRICS_INSTANCE:+${METRICS_INSTANCE}-}grafana-data

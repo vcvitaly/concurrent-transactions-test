@@ -1,0 +1,18 @@
+# Loads the committed dashboards (metrics/grafana/dashboards, or METRICS_DASHBOARDS_DIR) into the
+# "Repo" folder. UI saves are allowed and go to Grafana's database; `./metrics.sh export-dashboards`
+# writes them back to the files. A changed file overwrites unexported UI edits to its dashboard.
+apiVersion: 1
+
+providers:
+  - name: repo
+    orgId: 1
+    type: file
+    folder: Repo
+    # export-dashboards finds the folder by this uid, not by its title.
+    folderUid: repo
+    allowUiUpdates: true
+    disableDeletion: false
+    updateIntervalSeconds: 10
+    options:
+      path: /etc/grafana/repo-dashboards
+      foldersFromFilesStructure: false
