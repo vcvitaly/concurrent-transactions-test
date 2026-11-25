@@ -37,11 +37,15 @@ The collector SHALL scrape each service replica individually, not through the lo
 - **THEN** none of them is a scrape target
 
 ### Requirement: Scrape interval suits short load tests
-The collector SHALL scrape the service at most every 5 seconds.
+The collector SHALL scrape the service every 5 seconds by default. The interval SHALL be configurable.
 
-#### Scenario: One-minute load test
-- **WHEN** a k6 run lasts one minute
-- **THEN** at least 12 samples per replica are stored in the long-term store for each service metric during the run
+#### Scenario: Steady-state cadence
+- **WHEN** both replicas have been discovered and healthy for at least one minute
+- **THEN** `count_over_time(up{job="concurrent-transactions"}[1m])` in the long-term store is at least 11 for each replica
+
+#### Scenario: Transfer series appear when their event happens
+- **WHEN** a test causes a transfer with a given outcome
+- **THEN** the matching `transfers_total` series is in the long-term store within two scrape intervals plus the forwarding delay
 
 ### Requirement: Long-term store runs outside the cluster
 A single VictoriaMetrics store SHALL run as a local Docker container, started, stopped and reset by its own documented commands. `./deploy.sh` and `./deploy.sh --teardown` SHALL NOT start, stop or delete it or its data.
@@ -69,16 +73,42 @@ The collector SHALL forward every sample it scrapes to the long-term store by Pr
 - **WHEN** the store is unreachable for a few minutes while the collector keeps running, and then recovers
 - **THEN** samples scraped during the outage are delivered to the store after it recovers
 
-### Requirement: Teardown flushes forwarding first
-`./deploy.sh --teardown` SHALL wait, up to a bounded timeout, for the collector to finish forwarding before removing it. If forwarding hasn't caught up by then, teardown SHALL print a warning that recent samples may be missing from the store, and continue.
+### Requirement: Teardown drains forwarding on a best-effort basis
+Before removing the collector, `./deploy.sh --teardown` SHALL wait for its forwarding queue to drain, with a timeout on each status check and on the whole wait. Teardown SHALL then report pending, failed and dropped sample counts, and warn but continue if the queue hasn't drained. Draining is best effort: it doesn't guarantee delivery.
 
 #### Scenario: Store reachable at teardown
 - **WHEN** a load test has just finished and `./deploy.sh --teardown` runs with the store running
-- **THEN** the store has the run's samples up to the last scrape before the collector was removed
+- **THEN** teardown reports zero pending, failed and dropped samples, and the last sample of `up{job="concurrent-transactions"}` in the store is within two scrape intervals of when the app was removed
 
 #### Scenario: Store unreachable at teardown
 - **WHEN** `./deploy.sh --teardown` runs while the store is stopped
-- **THEN** teardown prints a warning that forwarding didn't catch up, and finishes within the timeout plus the normal teardown time
+- **THEN** teardown warns that forwarding didn't drain, prints the pending count, and finishes within the drain timeout plus the normal teardown time
+
+#### Scenario: Collector status can't be read
+- **WHEN** the collector doesn't answer a status check within its timeout
+- **THEN** teardown warns that delivery couldn't be checked and continues
+
+### Requirement: Collector flushes on shutdown
+The collector SHALL be given time to flush its forwarding queue when it is stopped, by a termination grace period longer than its shutdown flush deadline.
+
+#### Scenario: Collector removed with samples queued
+- **WHEN** the collector is removed while samples are still queued and the store is reachable
+- **THEN** the collector sends the queued samples before it exits, unless the flush deadline has passed
+
+### Requirement: Store is local-only unless explicitly exposed
+By default, the store SHALL listen only on the host's loopback interface. Listening on other interfaces SHALL need an explicit bind-address setting, and the start command SHALL print a warning when that setting exposes the store beyond loopback.
+
+#### Scenario: Default start
+- **WHEN** the store is started with the documented command and no bind-address setting
+- **THEN** its port is not reachable from another machine on the local network
+
+#### Scenario: Collector reaches the loopback-bound store
+- **WHEN** the store runs with the default binding and the collector is running
+- **THEN** remote-written samples from the collector can be read back from the store
+
+#### Scenario: Explicit exposure
+- **WHEN** the store is started with a bind address other than loopback
+- **THEN** the start command prints a warning that the store's API, which has no authentication, is reachable from the network
 
 ### Requirement: History is independent of the cluster
 The store's data SHALL survive cluster teardown and redeploy, and restarts of the store itself. The data SHALL be deleted only by an explicit, documented reset command, which asks for confirmation unless told not to.

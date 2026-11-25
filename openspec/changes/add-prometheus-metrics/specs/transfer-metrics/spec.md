@@ -2,7 +2,7 @@
 
 ## Purpose
 
-Makes the transfer service's behavior under contention visible from the server side (outcomes, latency, row-lock waits and database errors), so load-test runs can be explained and compared.
+Makes the transfer service's behavior under contention visible from the server side (outcomes, latency, row-lock query time and database errors), so load-test runs can be explained and compared.
 
 ## ADDED Requirements
 
@@ -18,7 +18,7 @@ The service SHALL expose its metrics in the Prometheus text exposition format ov
 - **THEN** no metrics are returned
 
 ### Requirement: Transfer outcome counter
-The service SHALL count each completed `POST /transfers` request in a `transfers_total` counter with exactly one `outcome` tag. The values are `created`, `replayed`, `insufficient_funds`, `not_found`, `invalid` and `error`.
+The service SHALL count each `POST /transfers` request that reaches transfer processing in a `transfers_total` counter with exactly one `outcome` tag. The values are `created`, `replayed`, `insufficient_funds`, `not_found`, `invalid` and `error`. A request reaches transfer processing when its body has been parsed into a transfer request.
 
 #### Scenario: New transfer
 - **WHEN** a transfer request moves money and the service responds 201
@@ -27,6 +27,10 @@ The service SHALL count each completed `POST /transfers` request in a `transfers
 #### Scenario: Repeated idempotency key
 - **WHEN** a transfer request reuses the (from, to, idempotency key) of an existing transfer and the service responds 200 with the original transfer
 - **THEN** `transfers_total{outcome="replayed"}` increases by 1 and `transfers_total{outcome="created"}` does not change
+
+#### Scenario: Known sequence of responses
+- **WHEN** a test sends one new transfer (201), then the same request twice more (200, 200), then a transfer that exceeds the balance (422), noting the counter values before and after
+- **THEN** `created` increased by exactly 1, `replayed` by exactly 2, `insufficient_funds` by exactly 1, and no other outcome changed
 
 #### Scenario: Insufficient funds
 - **WHEN** a transfer request is rejected because the sender's balance is below the amount
@@ -37,41 +41,49 @@ The service SHALL count each completed `POST /transfers` request in a `transfers
 - **THEN** `transfers_total{outcome="not_found"}` increases by 1
 
 #### Scenario: Invalid request
-- **WHEN** a transfer request fails validation (missing account, same account on both sides, or a non-positive amount)
+- **WHEN** a parsed transfer request fails validation (missing account, same account on both sides, or a non-positive amount)
 - **THEN** `transfers_total{outcome="invalid"}` increases by 1
 
 #### Scenario: Unexpected failure
 - **WHEN** a transfer request fails for any other reason, such as a database error
 - **THEN** `transfers_total{outcome="error"}` increases by 1
 
+#### Scenario: Unparseable request body
+- **WHEN** a `POST /transfers` request has malformed JSON or no body
+- **THEN** `transfers_total` does not change, and the request is visible only in the built-in HTTP server request metrics
+
 ### Requirement: Outcomes reflect the committed result
 The service SHALL record a transfer's outcome only after its transaction has committed or rolled back. A transfer whose commit fails SHALL NOT be counted as `created` or `replayed`.
 
-#### Scenario: Commit fails after money was moved in the transaction
-- **WHEN** a transfer's statements succeed but its transaction fails to commit
-- **THEN** the request is counted as `error`, not as `created`
+#### Scenario: Commit fails after the transfer logic finished
+- **WHEN** a transfer's statements all succeed but the database rejects the transaction at commit time
+- **THEN** the request is counted as `error`, not as `created`, and no money has moved
 
 ### Requirement: Transfer duration
-The service SHALL record the duration of each transfer request in a `transfer_duration_seconds` timer that carries the same `outcome` tag as `transfers_total` and publishes histogram buckets, so percentiles can be computed across replicas.
+The service SHALL record, in a `transfer_duration_seconds` timer, the time from the start of transfer processing until the transaction has finished. It SHALL carry the same `outcome` tag as `transfers_total` and publish histogram buckets, so percentiles can be computed across replicas. Request parsing and response writing are not included.
 
 #### Scenario: Duration is recorded per outcome
-- **WHEN** a transfer request completes with any outcome
-- **THEN** `transfer_duration_seconds_count` for that outcome increases by 1 and its `_sum` grows by the request's duration
+- **WHEN** a transfer request completes transfer processing with any outcome
+- **THEN** `transfer_duration_seconds_count` for that outcome increases by 1 and its `_sum` grows by the processing time
 
 #### Scenario: Percentiles can be aggregated
 - **WHEN** the metrics are scraped
 - **THEN** `transfer_duration_seconds_bucket` series with `le` tags are present
 
-### Requirement: Row-lock wait time
-The service SHALL record the time each transfer spends acquiring the row locks on its two accounts in a `transfer_lock_wait_seconds` timer with histogram buckets. The time SHALL be recorded whether the lock step succeeds or fails.
+### Requirement: Row-lock query time
+The service SHALL record, in a `transfer_lock_query_seconds` timer with histogram buckets, how long each transfer's lock query on its two accounts takes. The time covers the whole query, including any wait for row locks held by other transactions. It SHALL be recorded whether the query succeeds or fails.
 
 #### Scenario: Lock is contended
-- **WHEN** two transfers to the same account run concurrently and the second waits for the first to finish
-- **THEN** the second transfer's recorded lock wait is at least as long as the time it was blocked
+- **WHEN** another transaction holds the receiving account's row lock for about 300ms while a transfer runs
+- **THEN** the transfer's recorded lock-query time is at least about 300ms
 
-#### Scenario: Lock step fails
-- **WHEN** the lock step fails, for example because an account does not exist
-- **THEN** the time spent is still recorded in `transfer_lock_wait_seconds`
+#### Scenario: Uncontended baseline
+- **WHEN** transfers run one at a time with no other transactions
+- **THEN** their recorded lock-query times show the query's own cost, which is the baseline that contention is compared against
+
+#### Scenario: Lock query fails
+- **WHEN** the lock query fails, for example because an account does not exist
+- **THEN** the time spent is still recorded in `transfer_lock_query_seconds`
 
 ### Requirement: Database error counter
 The service SHALL count transfers that fail with a database error in a `transfer_db_errors_total` counter tagged with the error's PostgreSQL `sqlstate`. When no SQLSTATE is available, the tag value SHALL be `unknown`.
