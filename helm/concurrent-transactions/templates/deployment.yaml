@@ -47,6 +47,10 @@ spec:
             - name: http
               containerPort: 8080
               protocol: TCP
+            # Metrics and detailed health. Only the headless metrics Service exposes it.
+            - name: management
+              containerPort: 8090
+              protocol: TCP
           env:
             - name: SPRING_DATASOURCE_URL
               value: {{ required "database.url is required" .Values.database.url | quote }}

@@ -1,11 +1,15 @@
 #!/usr/bin/env bash
-# Deploys Postgres and the service to the current kubectl context, or removes them.
+# Deploys Postgres, the service and the Prometheus collector to the current kubectl context, or
+# removes them.
 #
-#   ./deploy.sh              build the images, install or upgrade both charts, then start speedbump
-#   ./deploy.sh --teardown   remove speedbump, uninstall both charts and permanently delete the
+#   ./deploy.sh              build the images, install or upgrade Postgres, the app and Prometheus,
+#                            then start speedbump
+#   ./deploy.sh --teardown   remove speedbump and the app, wait for Prometheus to forward what it
+#                            scraped, uninstall Prometheus and Postgres, and permanently delete the
 #                            database volume
 #
-# Set NAMESPACE to override the target namespace.
+# Set NAMESPACE to override the target namespace. Set METRICS_REMOTE_WRITE_URL to forward metrics
+# somewhere other than the local store (see metrics.sh). This script never touches that store.
 
 set -euo pipefail
 
@@ -15,6 +19,12 @@ NAMESPACE="${NAMESPACE:-concurrent-transactions}"
 TIMEOUT="5m"
 POSTGRES_RELEASE="postgres"
 APP_RELEASE="app"
+PROMETHEUS_RELEASE="prometheus"
+PROMETHEUS_SERVICE="prometheus"
+PROMETHEUS_CONFIG_MAP="${PROMETHEUS_SERVICE}-config"
+METRICS_DNS_NAME="${APP_RELEASE}-concurrent-transactions-metrics"
+DRAIN_TIMEOUT_SECONDS=60
+DRAIN_POLL_SECONDS=2
 DATABASE_URL="jdbc:postgresql://${POSTGRES_RELEASE}:5432/concurrent_transactions"
 DATABASE_SECRET="${POSTGRES_RELEASE}-credentials"
 DATABASE_VOLUME_CLAIM="data-${POSTGRES_RELEASE}-0"
@@ -94,6 +104,101 @@ start_speedbump() {
   kubectl -n "$NAMESPACE" wait --for=condition=Ready "pod/$SPEEDBUMP_POD" --timeout=60s
 }
 
+install_prometheus() {
+  local args=(
+    --namespace "$NAMESPACE"
+    --set-string "scrape.dnsName=$METRICS_DNS_NAME"
+  )
+  if [ -n "${METRICS_REMOTE_WRITE_URL:-}" ]; then
+    args+=(--set-string "remoteWrite.url=$METRICS_REMOTE_WRITE_URL")
+  fi
+  helm upgrade --install "$PROMETHEUS_RELEASE" helm/prometheus "${args[@]}" --wait --timeout "$TIMEOUT"
+}
+
+# Converts a Prometheus duration such as 5s, 1m or 1m30s to whole seconds.
+duration_seconds() {
+  local value="$1" total=0 number unit
+  while [[ "$value" =~ ^([0-9]+)(ms|s|m|h)(.*)$ ]]; do
+    number="${BASH_REMATCH[1]}"
+    unit="${BASH_REMATCH[2]}"
+    value="${BASH_REMATCH[3]}"
+    case "$unit" in
+      ms) ;;
+      s) total=$((total + number)) ;;
+      m) total=$((total + number * 60)) ;;
+      h) total=$((total + number * 3600)) ;;
+    esac
+  done
+  echo "$total"
+}
+
+# Prints "pending lag failed dropped" from Prometheus's own /metrics text, read through the API
+# server's service proxy, so no exec or port-forward is needed. Fails if it can't be read.
+remote_write_status() {
+  local metrics
+  metrics="$(kubectl get --raw \
+    "/api/v1/namespaces/$NAMESPACE/services/$PROMETHEUS_SERVICE:9090/proxy/metrics" \
+    --request-timeout=5s 2>/dev/null)" || return 1
+  awk '
+    /^prometheus_remote_storage_samples_pending[{ ]/ { pending += $NF; seen = 1 }
+    /^prometheus_remote_storage_highest_timestamp_in_seconds[{ ]/ { if ($NF > highest) highest = $NF }
+    /^prometheus_remote_storage_queue_highest_sent_timestamp_seconds[{ ]/ { if ($NF > sent) sent = $NF }
+    /^prometheus_remote_storage_samples_failed_total[{ ]/ { failed += $NF }
+    /^prometheus_remote_storage_samples_dropped_total[{ ]/ { dropped += $NF }
+    END {
+      if (!seen) exit 1
+      printf "%d %d %d %d\n", pending, highest - sent, failed, dropped
+    }
+  ' <<<"$metrics"
+}
+
+# Best effort: waits for Prometheus to forward what it has scraped before it is removed. Queue
+# gauges don't cover samples the store rejected or samples still unread in the WAL, so this can't
+# prove delivery. Prometheus also flushes on shutdown, within its termination grace period.
+drain_forwarding() {
+  local config
+  if ! config="$(kubectl -n "$NAMESPACE" get configmap "$PROMETHEUS_CONFIG_MAP" \
+    -o jsonpath='{.data.prometheus\.yml}' 2>/dev/null)"; then
+    echo "Prometheus is not installed; skipping the forwarding drain."
+    return
+  fi
+  if ! grep -q '^remote_write:' <<<"$config"; then
+    echo "Remote write is disabled; skipping the forwarding drain."
+    return
+  fi
+
+  local interval max_lag
+  interval="$(duration_seconds "$(awk '/scrape_interval:/ { print $2; exit }' <<<"$config")")"
+  max_lag=$((2 * (interval > 0 ? interval : 5)))
+
+  echo "Waiting up to ${DRAIN_TIMEOUT_SECONDS}s for Prometheus to forward its samples..."
+  local start=$SECONDS status="" pending lag failed dropped drained=false
+  while [ $((SECONDS - start)) -lt "$DRAIN_TIMEOUT_SECONDS" ]; do
+    if status="$(remote_write_status)"; then
+      read -r pending lag failed dropped <<<"$status"
+      if [ "$pending" -eq 0 ] && [ "$lag" -lt "$max_lag" ]; then
+        drained=true
+        break
+      fi
+    fi
+    sleep "$DRAIN_POLL_SECONDS"
+  done
+
+  if [ -z "$status" ]; then
+    echo "Warning: could not read Prometheus's forwarding status; delivery to the store was not checked." >&2
+    return
+  fi
+  read -r pending lag failed dropped <<<"$status"
+  echo "Forwarding: ${pending} pending, ${failed} failed, ${dropped} dropped samples (sent lag ${lag}s)."
+  if [ "$drained" != true ]; then
+    echo "Warning: forwarding did not drain within ${DRAIN_TIMEOUT_SECONDS}s; ${pending} samples are pending." \
+      "Is the store running (./metrics.sh status)?" >&2
+  fi
+  if [ "$failed" -ne 0 ] || [ "$dropped" -ne 0 ]; then
+    echo "Warning: some samples were not delivered (${failed} failed, ${dropped} dropped)." >&2
+  fi
+}
+
 stop_speedbump() {
   kubectl -n "$NAMESPACE" delete pod "$SPEEDBUMP_POD" --ignore-not-found --timeout "$TIMEOUT"
   kubectl -n "$NAMESPACE" delete service "$PROXY_SERVICE" --ignore-not-found --timeout "$TIMEOUT"
@@ -120,6 +225,8 @@ deploy() {
     --wait \
     --timeout "$TIMEOUT"
 
+  install_prometheus
+
   start_speedbump
 
   echo "Deployment complete. See README.md to port-forward speedbump to localhost:$SPEEDBUMP_PORT."
@@ -129,13 +236,17 @@ teardown() {
   echo "Tearing down from context '$1', namespace '$NAMESPACE'"
 
   stop_speedbump
-  # The app goes first so it is not left running without its database.
+  # The app goes first so it is not left running without its database, and so the last scrapes
+  # happen before Prometheus forwards them.
   helm uninstall "$APP_RELEASE" --namespace "$NAMESPACE" --ignore-not-found --wait --timeout "$TIMEOUT"
+  drain_forwarding
+  helm uninstall "$PROMETHEUS_RELEASE" --namespace "$NAMESPACE" --ignore-not-found --wait --timeout "$TIMEOUT"
   helm uninstall "$POSTGRES_RELEASE" --namespace "$NAMESPACE" --ignore-not-found --wait --timeout "$TIMEOUT"
   # StatefulSet volumes outlive the Helm release, so the claim is removed explicitly.
   kubectl delete pvc "$DATABASE_VOLUME_CLAIM" --namespace "$NAMESPACE" --ignore-not-found --timeout "$TIMEOUT"
 
-  echo "Teardown complete. The database volume was deleted and the namespace was kept."
+  echo "Teardown complete. The database volume was deleted and the namespace was kept." \
+    "The metrics store outside the cluster was not touched."
 }
 
 case "${1:-}" in

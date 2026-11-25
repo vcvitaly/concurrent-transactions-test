@@ -2,6 +2,8 @@ package io.github.vcvitaly.concurrenttransactionstest.transfer;
 
 import com.jayway.jsonpath.JsonPath;
 import io.github.vcvitaly.concurrenttransactionstest.TestcontainersConfiguration;
+import io.github.vcvitaly.concurrenttransactionstest.transfer.TransferMetrics.Outcome;
+import io.micrometer.core.instrument.MeterRegistry;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -10,6 +12,9 @@ import org.springframework.context.annotation.Import;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.test.web.servlet.assertj.MockMvcTester;
+
+import java.util.EnumMap;
+import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -20,6 +25,9 @@ class TransferControllerIT {
 
     @Autowired
     private MockMvcTester mvc;
+
+    @Autowired
+    private MeterRegistry meterRegistry;
 
     @Test
     void transfersMoneyBetweenAccounts() throws Exception {
@@ -76,6 +84,51 @@ class TransferControllerIT {
         assertThat(mvc.get().uri("/accounts/{id}", toId))
                 .hasStatusOk()
                 .bodyJson().extractingPath("$.balance").isEqualTo(10.00);
+    }
+
+    @Test
+    void countsEachOutcomeExactly() throws Exception {
+        long fromId = createAccount("erin", "50.00");
+        long toId = createAccount("frank", "0.00");
+        String body = """
+                {"fromAccountId": %d, "toAccountId": %d, "amount": 20.00, "idempotencyKey": "seq-1"}
+                """.formatted(fromId, toId);
+        Map<Outcome, Double> before = outcomeCounts();
+
+        assertThat(postTransfer(body)).hasStatus(HttpStatus.CREATED);
+        assertThat(postTransfer(body)).hasStatus(HttpStatus.OK);
+        assertThat(postTransfer(body)).hasStatus(HttpStatus.OK);
+        assertThat(postTransfer("""
+                {"fromAccountId": %d, "toAccountId": %d, "amount": 999.00, "idempotencyKey": "seq-2"}
+                """.formatted(fromId, toId))).hasStatus(HttpStatus.UNPROCESSABLE_CONTENT);
+        assertThat(postTransfer("""
+                {"fromAccountId": %d, "toAccountId": %d, "amount": 1.00, "idempotencyKey": "seq-3"}
+                """.formatted(fromId, Long.MAX_VALUE))).hasStatus(HttpStatus.NOT_FOUND);
+        assertThat(postTransfer("""
+                {"fromAccountId": %d, "toAccountId": %d, "amount": 1.00, "idempotencyKey": "seq-4"}
+                """.formatted(fromId, fromId))).hasStatus(HttpStatus.BAD_REQUEST);
+
+        Map<Outcome, Double> after = outcomeCounts();
+        Map<Outcome, Double> expected = new EnumMap<>(Map.of(
+                Outcome.CREATED, 1.0,
+                Outcome.REPLAYED, 2.0,
+                Outcome.INSUFFICIENT_FUNDS, 1.0,
+                Outcome.NOT_FOUND, 1.0,
+                Outcome.INVALID, 1.0,
+                Outcome.ERROR, 0.0));
+        for (Outcome outcome : Outcome.values()) {
+            assertThat(after.get(outcome) - before.get(outcome)).as(outcome.tag())
+                    .isEqualTo(expected.get(outcome));
+        }
+    }
+
+    private Map<Outcome, Double> outcomeCounts() {
+        Map<Outcome, Double> counts = new EnumMap<>(Outcome.class);
+        for (Outcome outcome : Outcome.values()) {
+            counts.put(outcome, meterRegistry.get(TransferMetrics.TRANSFERS)
+                    .tag("outcome", outcome.tag()).counter().count());
+        }
+        return counts;
     }
 
     private MockMvcTester.MockMvcRequestBuilder postTransfer(String body) {
